@@ -1,7 +1,9 @@
 #!/bin/bash
 set -euo pipefail
+umask 077
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_BASE="$(cd "${SELF_DIR}/.." && pwd)"
+APP_STATE="${TRIM_PKGVAR:-${APP_BASE}/var}"
 APP_ROOT=""
 for candidate in "${TRIM_APPDEST:-}" "${APP_BASE}/target" "${APP_BASE}"; do
     if [ -n "${candidate}" ] && [ -x "${candidate}/runtime/python/bin/python3" ]; then
@@ -9,11 +11,53 @@ for candidate in "${TRIM_APPDEST:-}" "${APP_BASE}/target" "${APP_BASE}"; do
         break
     fi
 done
-[ -n "${APP_ROOT}" ] || { echo '应用运行文件缺失' >&2; exit 1; }
-APP_STATE="${TRIM_PKGVAR:-${APP_BASE}/var}"
+bootstrap_failure() {
+    mkdir -p -- "${APP_STATE}/logs"
+    chmod 700 "${APP_STATE}/logs"
+    local log="${APP_STATE}/logs/bootstrap.log"
+    if [ -f "$log" ] && [ "$(wc -c < "$log")" -ge 524288 ]; then
+        mv -f -- "$log" "${log}.1"
+    fi
+    { date -u '+%Y-%m-%dT%H:%M:%SZ startup failure'; tail -c 262144 -- "$1"; } >> "$log"
+    chmod 600 "$log"
+    tail -c 4096 "$log" | tail -n 20 >&2
+    if [ -n "${TRIM_TEMP_LOGFILE:-}" ]; then
+        tail -c 4096 "$log" | tail -n 20 > "${TRIM_TEMP_LOGFILE}"
+        chmod 600 "${TRIM_TEMP_LOGFILE}"
+    fi
+}
+if [ -z "${APP_ROOT}" ]; then
+    mkdir -p -- "${APP_STATE}/logs"
+    missing="$(mktemp "${APP_STATE}/logs/.bootstrap.XXXXXX")"
+    echo '应用运行文件缺失，请重新安装对应架构的软件包。' > "$missing"
+    bootstrap_failure "$missing"
+    rm -f -- "$missing"
+    exit 1
+fi
 export PYTHONPATH="${APP_ROOT}/site:${APP_ROOT}/code"
 export PYTHONDONTWRITEBYTECODE=1
 export PATH="${APP_ROOT}/runtime/node/bin:${APP_ROOT}/runtime/python/bin:${PATH}"
 run_lifecycle() {
-    "${APP_ROOT}/runtime/python/bin/python3" -m scripts.fpk_lifecycle "$1" --root "${APP_ROOT}" --state "${APP_STATE}"
+    if [ "$1" = status ]; then
+        "${APP_ROOT}/runtime/python/bin/python3" -m scripts.fpk_lifecycle "$1" --root "${APP_ROOT}" --state "${APP_STATE}"
+        return
+    fi
+    local output result
+    if ! mkdir -p -- "${APP_STATE}/logs" || ! chmod 700 "${APP_STATE}/logs"; then
+        "${APP_ROOT}/runtime/python/bin/python3" -m scripts.fpk_lifecycle "$1" --root "${APP_ROOT}" --state "${APP_STATE}"
+        return
+    fi
+    if ! output="$(mktemp "${APP_STATE}/logs/.bootstrap.XXXXXX")"; then
+        "${APP_ROOT}/runtime/python/bin/python3" -m scripts.fpk_lifecycle "$1" --root "${APP_ROOT}" --state "${APP_STATE}"
+        return
+    fi
+    if "${APP_ROOT}/runtime/python/bin/python3" -m scripts.fpk_lifecycle "$1" --root "${APP_ROOT}" --state "${APP_STATE}" 2>&1 | tail -c 262144 > "$output"; then
+        result=0
+    else
+        # A full log disk must not change the lifecycle command's exit status.
+        result=${PIPESTATUS[0]}
+        if [ "$result" -ne 0 ]; then bootstrap_failure "$output" || true; fi
+    fi
+    rm -f -- "$output" || true
+    return "$result"
 }

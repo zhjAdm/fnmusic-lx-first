@@ -10,6 +10,7 @@ import re
 import shlex
 import uuid
 from .tools import MediaTools
+from .logs import event
 
 
 def transaction(method):
@@ -82,6 +83,9 @@ def validate_directory(value):
 class ProxyControl:
     unit = "fnmusic-lx-proxy.service"
 
+    def __init__(self, data_dir=None):
+        self.data_dir = data_dir
+
     async def command(self, action, *, check=True):
         proc = await asyncio.create_subprocess_exec(
             "systemctl",
@@ -98,6 +102,16 @@ class ProxyControl:
             await proc.wait()
             raise
         if check and code:
+            if self.data_dir:
+                event(
+                    self.data_dir,
+                    "manager",
+                    "takeover.service_failed",
+                    level="ERROR",
+                    action=action,
+                    units=self.unit,
+                    code=code,
+                )
             raise ValueError("操作失败，请检查官方音乐是否运行及扩展服务状态")
         return code == 0
 
@@ -183,9 +197,18 @@ class Settings:
         if not self.download_task or self.download_task.done():
 
             async def install():
+                event(self.config.data_dir, "download", "tools.started")
                 try:
                     await self.tools.install()
-                except Exception:
+                    event(self.config.data_dir, "download", "tools.ready")
+                except Exception as exc:
+                    event(
+                        self.config.data_dir,
+                        "download",
+                        "tools.failed",
+                        level="ERROR",
+                        error=exc,
+                    )
                     # Error details remain in component state, without download URLs.
                     pass
 
@@ -247,7 +270,14 @@ class Settings:
             try:
                 if was_active:
                     await self.control.enable()
-            except Exception:
+            except Exception as exc:
+                event(
+                    self.config.data_dir,
+                    "manager",
+                    "settings.reactivate_failed",
+                    level="ERROR",
+                    error=exc,
+                )
                 atomic_text(self.env_path, original)
                 data["takeover"] = False
                 self.write(data)
@@ -284,7 +314,14 @@ class Settings:
                         json={"id": data["source_id"]},
                     )
                 source_id = await self.lx.import_script(temp)
-            except Exception:
+            except Exception as exc:
+                event(
+                    self.config.data_dir,
+                    "manager",
+                    "source.failed",
+                    level="ERROR",
+                    error=exc,
+                )
                 recovered = False
                 if self.source_path.exists():
                     try:
@@ -292,8 +329,14 @@ class Settings:
                         if active:
                             await self.control.enable()
                         recovered = True
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        event(
+                            self.config.data_dir,
+                            "manager",
+                            "source.restore_failed",
+                            level="ERROR",
+                            error=exc,
+                        )
                 old["takeover"] = active and recovered
                 self.write(old)
                 raise ValueError(
@@ -315,6 +358,7 @@ class Settings:
                 takeover=False,
             )
             self.write(data)
+            event(self.config.data_dir, "manager", "source.saved")
             if active:
                 try:
                     await self.control.enable()

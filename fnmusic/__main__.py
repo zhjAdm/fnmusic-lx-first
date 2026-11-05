@@ -10,6 +10,7 @@ import uvicorn
 
 from .app import create_app
 from .config import Config, load_env
+from .logs import event
 
 
 def main():
@@ -105,4 +106,14 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        event(
+            Path(os.environ.get("DATA_DIR", "data")),
+            "proxy",
+            "process.failed",
+            level="ERROR",
+            error=exc,
+        )
+        raise

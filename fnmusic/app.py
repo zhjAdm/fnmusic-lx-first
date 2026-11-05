@@ -15,6 +15,7 @@ from .official import Official
 from .playlists import Playlists
 from .store import Store
 from .transcode import Transcode
+from .logs import event
 
 PREFIX = "/music/api/v1/"
 
@@ -56,6 +57,7 @@ def create_app(
         app.state.jobs = jobs
         if worker:
             jobs.start()
+        event(config.data_dir, "proxy", "service.started")
         try:
             yield
         finally:
@@ -65,6 +67,7 @@ def create_app(
             await lc.aclose()
             await mc.aclose()
             store.close()
+            event(config.data_dir, "proxy", "service.stopped")
 
     app = FastAPI(
         title="fnMusic LX 扩展",
@@ -77,6 +80,7 @@ def create_app(
 
     @app.exception_handler(ValueError)
     async def value_error(request, exc):
+        event(config.data_dir, "proxy", "response.invalid", level="ERROR", error=exc)
         return JSONResponse(
             {"code": -1, "msg": "音源或官方接口响应异常，请检查配置", "data": None},
             status_code=502,
@@ -84,6 +88,7 @@ def create_app(
 
     @app.exception_handler(httpx.HTTPError)
     async def upstream_error(request, exc):
+        event(config.data_dir, "proxy", "upstream.failed", level="ERROR", error=exc)
         return JSONResponse(
             {"code": -1, "msg": "上游服务不可用", "data": None}, status_code=502
         )

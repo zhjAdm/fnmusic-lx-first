@@ -20,7 +20,7 @@ from scripts.runtime import (
 )
 
 ROOT = Path(__file__).resolve().parent.parent
-VERSION = "0.1.3"
+VERSION = "0.1.4"
 
 
 def icon(path, size):

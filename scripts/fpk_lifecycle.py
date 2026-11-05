@@ -11,6 +11,7 @@ import tarfile
 import time
 
 from fnmusic.control import atomic_text
+from fnmusic.logs import event
 from scripts.runtime import configure
 
 UNITS = (
@@ -19,6 +20,12 @@ UNITS = (
     "fnmusic-lx-source.service",
 )
 MARKER = "# Managed by fnmusic-lx-first FPK"
+
+
+class ServiceOperationError(RuntimeError):
+    def __init__(self, action, units, code):
+        self.action, self.units, self.code = action, units, code
+        super().__init__("Application service operation failed")
 
 
 def quote(value):
@@ -140,7 +147,7 @@ def systemctl(action, *units, check=True):
         timeout=60,
     )
     if check and result.returncode:
-        raise RuntimeError("Application service operation failed")
+        raise ServiceOperationError(action, units, result.returncode)
     return result.returncode == 0
 
 
@@ -247,6 +254,8 @@ def main():
     args = parser.parse_args()
     root, state = Path(args.root).resolve(), Path(args.state).resolve()
     try:
+        if args.action != "status":
+            event(state, "lifecycle", args.action + ".started")
         if args.action == "install":
             install(root, state)
         elif args.action == "start":
@@ -261,10 +270,29 @@ def main():
                 if systemctl("is-active", "fnmusic-lx-manager.service", check=False)
                 else 3
             )
+        event(state, "lifecycle", args.action + ".completed")
     except Exception as exc:
+        details = (
+            {"action": exc.action, "units": ",".join(exc.units), "code": exc.code}
+            if isinstance(exc, ServiceOperationError)
+            else {}
+        )
+        event(
+            state,
+            "lifecycle",
+            args.action + ".failed",
+            level="ERROR",
+            error=exc,
+            **details,
+        )
+        reason = (
+            f"systemctl {exc.action} {','.join(exc.units)} exited {exc.code}"
+            if isinstance(exc, ServiceOperationError)
+            else type(exc).__name__
+        )
         parser.exit(
             1,
-            f"fnMusic lifecycle failed ({type(exc).__name__}); official files and downloaded music are preserved.\n",
+            f"fnMusic {args.action} failed: {reason}. Logs: {state / 'logs'}.\n",
         )
 
 

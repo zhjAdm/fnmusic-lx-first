@@ -162,3 +162,37 @@ def test_optional_component_download_requires_admin_and_is_not_automatic(
         assert calls == []
         assert c.post("/api/tools/download", json={}, headers=ADMIN).status_code == 200
     assert calls == [True]
+
+
+def test_logs_admin_read_filter_export_and_invalid_sources(tmp_path):
+    app, _ = manager(tmp_path)
+    from fnmusic.logs import event
+
+    event(tmp_path / "state", "manager", "settings.saved")
+    event(
+        tmp_path / "state",
+        "jobs",
+        "job.failed",
+        level="ERROR",
+        error=ValueError("private URL"),
+    )
+    with TestClient(app) as c:
+        assert c.get("/api/logs").status_code == 403
+        assert c.get("/api/logs/download").status_code == 403
+        result = c.get("/api/logs?source=events&level=ERROR&limit=10", headers=ADMIN)
+        assert result.status_code == 200
+        assert len(result.json()["entries"]) == 1
+        exported = c.get(
+            "/app/fnmusic-lx-first/api/logs/download?source=events&level=ERROR",
+            headers=ADMIN,
+        )
+        assert (
+            exported.status_code == 200
+            and "attachment" in exported.headers["content-disposition"]
+        )
+        assert "job.failed" in exported.text and "private URL" not in exported.text
+        assert (
+            c.get("/api/logs?source=../../worker.env", headers=ADMIN).status_code == 422
+        )
+        assert c.get("/api/logs?limit=100000", headers=ADMIN).status_code == 422
+        assert exported.headers["cache-control"] == "no-store"

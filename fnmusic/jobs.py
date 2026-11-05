@@ -6,6 +6,7 @@ from fastapi import HTTPException
 
 from .official import session_headers
 from .tools import MissingTool
+from .logs import event
 
 
 class Jobs:
@@ -67,6 +68,14 @@ class Jobs:
                     raise
                 except MissingTool:
                     if self.store.is_liked(user, guid):
+                        if job["state"] != "waiting_tools":
+                            event(
+                                self.config.data_dir,
+                                "jobs",
+                                "tools.waiting",
+                                level="WARNING",
+                                task=guid,
+                            )
                         self.store.update_job(
                             user,
                             guid,
@@ -75,6 +84,15 @@ class Jobs:
                             next_at=time.time() + 30,
                         )
                 except HTTPException as exc:
+                    event(
+                        self.config.data_dir,
+                        "jobs",
+                        "official.failed",
+                        level="WARNING",
+                        task=guid,
+                        error=exc,
+                        status=exc.status_code,
+                    )
                     if not self.store.is_liked(user, guid):
                         continue
                     if exc.status_code == 401:
@@ -88,12 +106,28 @@ class Jobs:
                         )
                         break
                     self.retry(user, job)
-                except Exception:
+                except Exception as exc:
                     if self.store.is_liked(user, guid):
+                        event(
+                            self.config.data_dir,
+                            "jobs",
+                            "processing.failed",
+                            level="ERROR",
+                            task=guid,
+                            error=exc,
+                        )
                         self.retry(user, job)
 
     def retry(self, user, job):
         attempts = job["attempts"] + 1
+        event(
+            self.config.data_dir,
+            "jobs",
+            "retry.scheduled" if attempts < 8 else "retry.exhausted",
+            level="WARNING" if attempts < 8 else "ERROR",
+            task=job["guid"],
+            attempts=attempts,
+        )
         self.store.update_job(
             user,
             job["guid"],
@@ -119,6 +153,13 @@ class Jobs:
                     try:
                         path = await self.audio.download(track, quality)
                         self.store.save_file(guid, path, quality)
+                        event(
+                            self.config.data_dir,
+                            "jobs",
+                            "audio.downloaded",
+                            task=guid,
+                            quality=quality,
+                        )
                         break
                     except (ValueError, OSError, TimeoutError):
                         continue
@@ -176,3 +217,4 @@ class Jobs:
             )
             return
         self.store.update_job(user, guid, state="done", next_at=0, error="")
+        event(self.config.data_dir, "jobs", "playlist.completed", task=guid)

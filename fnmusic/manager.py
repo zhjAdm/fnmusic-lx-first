@@ -6,11 +6,12 @@ import json
 from pathlib import Path
 import httpx
 from fastapi import FastAPI, APIRouter, Request, HTTPException
-from starlette.responses import FileResponse, JSONResponse
+from starlette.responses import FileResponse, JSONResponse, PlainTextResponse
 import uvicorn
 from .config import Config, load_env
 from .control import Settings, ProxyControl
 from .lx import LX
+from .logs import event, collect, format_text
 
 STATIC = Path(__file__).parent / "static"
 BASE = "/app/fnmusic-lx-first"
@@ -22,16 +23,20 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
         client = httpx.AsyncClient(base_url=config.lx_url, timeout=30, trust_env=False)
         lx = LX(client, config.lx_password, config.platforms)
     kwargs = {"validate_dir": validate_dir} if validate_dir else {}
-    settings = Settings(config, env_path, control or ProxyControl(), lx, **kwargs)
+    settings = Settings(
+        config, env_path, control or ProxyControl(config.data_dir), lx, **kwargs
+    )
 
     @asynccontextmanager
     async def lifespan(app):
+        event(config.data_dir, "manager", "service.started")
         try:
             yield
         finally:
             await settings.close()
             if client:
                 await client.aclose()
+            event(config.data_dir, "manager", "service.stopped")
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
@@ -51,7 +56,33 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
                 return JSONResponse({"error": "请求来源校验失败"}, status_code=403)
             if request.headers.get("sec-fetch-site") == "cross-site":
                 return JSONResponse({"error": "不接受跨站请求"}, status_code=403)
-        return await call_next(request)
+        operation = request.url.path.removeprefix(BASE)
+        mutations = {
+            "/api/source": "source.upload",
+            "/api/settings": "settings.save",
+            "/api/takeover": "takeover.change",
+            "/api/tools/download": "tools.download",
+        }
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            event(
+                config.data_dir, "manager", "request.failed", level="ERROR", error=exc
+            )
+            raise
+        if request.method == "POST" and operation in mutations:
+            event(
+                config.data_dir,
+                "manager",
+                mutations[operation],
+                level="ERROR"
+                if response.status_code >= 500
+                else "WARNING"
+                if response.status_code >= 400
+                else "INFO",
+                status=response.status_code,
+            )
+        return response
 
     @app.exception_handler(ValueError)
     async def invalid(request, exc):
@@ -63,6 +94,7 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
 
     @app.exception_handler(httpx.HTTPError)
     async def upstream_error(request, exc):
+        event(config.data_dir, "manager", "upstream.failed", level="ERROR", error=exc)
         return JSONResponse({"error": "音源服务不可用，请稍后重试"}, status_code=503)
 
     async def body(request):
@@ -118,6 +150,31 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
     async def download_tools(request: Request):
         await body(request)
         return await settings.download_tools()
+
+    async def log_result(source, level, limit):
+        return await collect(
+            config.data_dir, source, level, limit, secrets=(config.lx_password,)
+        )
+
+    @router.get("/api/logs")
+    async def logs(source: str = "events", level: str = "ALL", limit: int = 200):
+        return JSONResponse(
+            await log_result(source, level, limit),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @router.get("/api/logs/download")
+    async def download_logs(
+        source: str = "events", level: str = "ALL", limit: int = 500
+    ):
+        result = await log_result(source, level, limit)
+        return PlainTextResponse(
+            format_text(result),
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Disposition": f'attachment; filename="fnmusic-{source}.log"',
+            },
+        )
 
     app.include_router(router)
     app.include_router(router, prefix=BASE)
@@ -205,4 +262,16 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        import os
+
+        event(
+            Path(os.environ.get("DATA_DIR", "data")),
+            "manager",
+            "process.failed",
+            level="ERROR",
+            error=exc,
+        )
+        raise

@@ -14,5 +14,17 @@ $('settings-form').addEventListener('submit',event=>{event.preventDefault();acti
 $('takeover').addEventListener('change',event=>{const enabled=event.target.checked;action(async()=>{message(enabled?'正在接入在线扩展…':'正在恢复官方直连…');render(await api('takeover',{enabled}));message(enabled?'在线扩展已开启，回到飞牛音乐搜索歌曲即可。':'已恢复官方直连，管理页面继续运行。');});});
 async function refresh(){if(busy)return;try{render(await api('state'));}catch(error){$('connection').querySelector('span').textContent='管理服务连接失败';message(error.message,true);}}
 $('tools-download').addEventListener('click',()=>action(async()=>{await api('tools/download',{});render(await api('state'));message('已开始准备音频组件，可以在此查看进度。');}));
+
+let logBusy=false;
+const logNames={'service.started':'服务已启动','service.stopped':'服务已停止','source.upload':'上传音源','settings.save':'保存设置','takeover.change':'切换官方接管','tools.download':'请求下载音频组件','tools.started':'开始准备音频组件','tools.ready':'音频组件已就绪','tools.failed':'音频组件准备失败','processing.failed':'收藏任务处理失败','audio.downloaded':'音频下载完成','playlist.completed':'已加入默认歌单','retry.scheduled':'任务等待重试','retry.exhausted':'任务重试次数已用尽','tools.waiting':'任务等待音频组件','process.failed':'服务进程异常','upstream.failed':'上游请求失败'};
+function logQuery(){return new URLSearchParams({source:$('log-source').value,level:$('log-level').value});}
+function logLink(){$('log-download').href=new URL('api/logs/download?'+logQuery(),base).href;}
+async function loadLogs(){if(logBusy)return;logBusy=true;const requested=logQuery().toString();$('log-refresh').disabled=true;try{const result=await api('logs?'+requested);$('log-output').textContent=result.entries.map(row=>{const time=row.time?new Date(row.time).toLocaleString('zh-CN',{hour12:false}):'';const title=row.message||logNames[row.event]||row.event||'';const detail=Object.fromEntries(Object.entries(row).filter(([key])=>!['time','level','component','event','message'].includes(key)));return `${time} [${row.level}] ${row.component} · ${title}`+(Object.keys(detail).length?'\n'+JSON.stringify(detail):'');}).join('\n\n')||'暂无匹配的日志。';$('log-note').textContent=result.note||`已加载 ${result.entries.length} 条记录 · ${new Date().toLocaleTimeString('zh-CN')} 更新`;}catch(error){$('log-note').textContent='日志读取失败：'+error.message;}finally{logBusy=false;$('log-refresh').disabled=busy;if(requested!==logQuery().toString())loadLogs();}}
+$('log-refresh').addEventListener('click',loadLogs);
+['log-source','log-level'].forEach(id=>$(id).addEventListener('change',()=>{logLink();loadLogs();}));
+$('log-auto').addEventListener('change',()=>{if($('log-auto').checked)loadLogs();});
+setInterval(()=>{if($('log-auto').checked&&!document.hidden)loadLogs();},5000);
+logLink();
+
 refresh();setInterval(refresh,2000);
 })();
