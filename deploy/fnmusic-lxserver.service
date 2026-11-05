@@ -1,0 +1,22 @@
+[Unit]
+Description=Private LX runtime for fnMusic
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/fnmusic-lx/data/runtime/lxserver
+Environment=NODE_ENV=production
+Environment=DATA_PATH=/opt/fnmusic-lx/data/lxserver
+Environment=CONFIG_PATH=/opt/fnmusic-lx/data/lxserver/config.js
+Environment=PORT=8005
+Environment=BIND_IP=127.0.0.1
+ExecStart=/usr/bin/env node index.js
+Restart=on-failure
+RestartSec=5
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

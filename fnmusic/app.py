@@ -1,0 +1,426 @@
+import time
+from contextlib import asynccontextmanager
+
+import httpx
+from fastapi import FastAPI, HTTPException, Request
+from starlette.responses import JSONResponse
+
+from .audio import Audio
+from .config import Config
+from .jobs import Jobs
+from .lx import LX
+from .media import Media
+from .models import to_official
+from .official import Official
+from .playlists import Playlists
+from .store import Store
+from .transcode import Transcode
+
+PREFIX = "/music/api/v1/"
+
+
+def envelope(data):
+    return {"code": 0, "msg": "", "data": data}
+
+
+def create_app(
+    config=None, official_client=None, lx_client=None, media_client=None, *, worker=True
+):
+    config = config or Config.from_env()
+
+    @asynccontextmanager
+    async def lifespan(app):
+        config.data_dir.mkdir(parents=True, exist_ok=True)
+        store = Store(config.data_dir / "state.db")
+        oc = official_client or httpx.AsyncClient(
+            base_url="http://official",
+            transport=httpx.AsyncHTTPTransport(uds=config.upstream_socket),
+            timeout=20,
+            trust_env=False,
+        )
+        lc = lx_client or httpx.AsyncClient(
+            base_url=config.lx_url, timeout=20, trust_env=False
+        )
+        mc = media_client or httpx.AsyncClient(
+            timeout=httpx.Timeout(30, read=45), trust_env=False
+        )
+        official = Official(oc, config)
+        lx = LX(lc, config.lx_password, config.platforms)
+        app.state.store = store
+        app.state.official = official
+        app.state.lx = lx
+        app.state.media = Media(mc, lx, official, store, config)
+        app.state.transcode = Transcode(app.state.media)
+        app.state.playlists = Playlists(store, lx, config)
+        jobs = Jobs(store, lx, Audio(mc, lx, config), official, config)
+        app.state.jobs = jobs
+        if worker:
+            jobs.start()
+        try:
+            yield
+        finally:
+            await jobs.stop()
+            await app.state.transcode.stop()
+            await oc.aclose()
+            await lc.aclose()
+            await mc.aclose()
+            store.close()
+
+    app = FastAPI(
+        title="fnMusic LX 扩展",
+        lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
+    search_cache = {}
+
+    @app.exception_handler(ValueError)
+    async def value_error(request, exc):
+        return JSONResponse(
+            {"code": -1, "msg": "音源或官方接口响应异常，请检查配置", "data": None},
+            status_code=502,
+        )
+
+    @app.exception_handler(httpx.HTTPError)
+    async def upstream_error(request, exc):
+        return JSONResponse(
+            {"code": -1, "msg": "上游服务不可用", "data": None}, status_code=502
+        )
+
+    async def identity(request):
+        user = await app.state.official.user(request.headers)
+        app.state.jobs.touch(user, request.headers)
+        return user
+
+    async def forward(request):
+        path = request.url.path + ("?" + request.url.query if request.url.query else "")
+        return await app.state.official.passthrough(
+            request.method, path, request.headers, await request.body()
+        )
+
+    def track(guid):
+        return app.state.store.get_track(guid)
+
+    def guid_of(request):
+        return (
+            request.query_params.get("guid")
+            or request.query_params.get("trackGUID")
+            or request.query_params.get("trackGuid")
+            or request.query_params.get("id")
+            or request.query_params.get("trackId")
+            or str(request.path_params.get("subpath") or "").split("/")[0].split(".")[0]
+            or ""
+        )
+
+    def page_args(request):
+        try:
+            page = max(1, int(request.query_params.get("page", "1")))
+            size = min(100, max(1, int(request.query_params.get("size", "50"))))
+        except ValueError:
+            raise HTTPException(400, "分页参数无效") from None
+        return page, size
+
+    @app.get("/_ext/healthz")
+    async def health():
+        return {
+            "status": "running",
+            "mode": config.play_mode,
+            "audio_cache": False,
+            "client_failure_fallback": "requires-client-support",
+        }
+
+    @app.get("/_ext/jobs")
+    @app.get(PREFIX + "_ext/jobs")
+    async def jobs(request: Request):
+        user = await identity(request)
+        return envelope(app.state.store.jobs(user))
+
+    @app.post("/_ext/jobs/retry")
+    @app.post(PREFIX + "_ext/jobs/retry")
+    async def retry(request: Request):
+        user = await identity(request)
+        body = await request.json()
+        guid = str(body.get("guid") or "")
+        if not app.state.store.is_liked(user, guid):
+            raise HTTPException(404, "当前用户没有该收藏")
+        app.state.store.update_job(
+            user, guid, state="pending", attempts=0, next_at=0, error=""
+        )
+        return envelope(None)
+
+    @app.get(PREFIX + "search/track")
+    @app.get(PREFIX + "search/track/{subpath:path}")
+    async def search(request: Request):
+        user = await identity(request)
+        page, size = page_args(request)
+        keyword = (
+            request.query_params.get("keyword") or request.query_params.get("q") or ""
+        )
+        if not keyword.strip():
+            return envelope(
+                await app.state.official.search(keyword, request.headers, page, size)
+            )
+        key = (user, keyword)
+        cached = search_cache.get(key)
+        if not cached or cached[0] < time.monotonic():
+            local = await app.state.official.list_all(
+                PREFIX + "search/track", request.headers, keyword=keyword
+            )
+            try:
+                raws = await app.state.lx.search(keyword, 1, 100)
+            except (httpx.HTTPError, ValueError, RuntimeError):
+                raws = []
+            online = [to_official(app.state.store.save_track(raw)) for raw in raws]
+            unique = {row["guid"]: row for row in online + local["list"]}
+            cached = (time.monotonic() + 60, list(unique.values()))
+            if len(search_cache) >= 100:
+                search_cache.pop(next(iter(search_cache)))
+            search_cache[key] = cached
+        online = [dict(row) for row in cached[1]]
+        for vo in online:
+            if track(vo["guid"]):
+                vo["isFavorite"] = app.state.store.is_liked(user, vo["guid"])
+        return envelope(
+            {"list": online[(page - 1) * size : page * size], "total": len(online)}
+        )
+
+    @app.api_route(PREFIX + "track/stream", methods=["GET", "HEAD"])
+    @app.api_route(PREFIX + "track/stream/{subpath:path}", methods=["GET", "HEAD"])
+    async def stream(request: Request):
+        item = track(guid_of(request))
+        if not item:
+            return await forward(request)
+        user = await identity(request)
+        return await app.state.media.play(
+            item,
+            user,
+            request.headers,
+            request.headers.get("range"),
+            request.method == "HEAD",
+        )
+
+    @app.get(PREFIX + "track/lyrics")
+    @app.get(PREFIX + "track/lyrics/{subpath:path}")
+    @app.get(PREFIX + "detail/lyrics/{subpath:path}")
+    async def lyrics(request: Request):
+        item = track(guid_of(request))
+        if not item:
+            return await forward(request)
+        await identity(request)
+        data = await app.state.lx.lyric(item["raw"])
+        if isinstance(data, dict) and isinstance(data.get("promise"), dict):
+            data = data["promise"]
+        return envelope(
+            {
+                "guid": item["guid"],
+                "lyric": data.get("lyric", ""),
+                "tlyric": data.get("tlyric", ""),
+                "rlyric": data.get("rlyric", ""),
+            }
+        )
+
+    @app.api_route(PREFIX + "track/transcode", methods=["GET", "POST"])
+    @app.api_route(PREFIX + "track/transcode/heartbeat", methods=["GET", "POST"])
+    @app.api_route(PREFIX + "track/transcode/quit", methods=["GET", "POST"])
+    async def transcode(request: Request):
+        body = await request.json() if request.method == "POST" else {}
+        guid = guid_of(request) or body.get("trackGUID") or body.get("guid") or ""
+        if not track(guid):
+            return await forward(request)
+        await identity(request)
+        return envelope({"guid": guid, "status": "ready"})
+
+    @app.api_route(PREFIX + "track/hls/{guid}/{filename}", methods=["GET", "HEAD"])
+    async def hls(request: Request, guid: str, filename: str):
+        item = track(guid)
+        if not item:
+            return await forward(request)
+        user = await identity(request)
+        from starlette.responses import Response
+
+        if filename == "preset.m3u8":
+            body = app.state.transcode.playlist(item)
+            return Response(
+                b"" if request.method == "HEAD" else body,
+                media_type="application/vnd.apple.mpegurl",
+                headers={"Cache-Control": "no-store"},
+            )
+        if filename == "audio.aac":
+            if request.method == "HEAD":
+                return Response(media_type="audio/aac")
+            return await app.state.transcode.audio(item, user, request.headers)
+        raise HTTPException(404)
+
+    @app.get(PREFIX + "track/metadata")
+    @app.get(PREFIX + "track/metadata/{subpath:path}")
+    @app.get(PREFIX + "track/audio-info")
+    async def metadata(request: Request):
+        item = track(guid_of(request))
+        if not item:
+            return await forward(request)
+        user = await identity(request)
+        vo = to_official(item, app.state.store.is_liked(user, item["guid"]))
+        return envelope(dict(vo, track=dict(vo)))
+
+    @app.api_route(PREFIX + "static/cover", methods=["GET", "HEAD"])
+    @app.api_route(PREFIX + "static/cover/{subpath:path}", methods=["GET", "HEAD"])
+    async def cover(request: Request):
+        guid = (
+            request.query_params.get("id")
+            or request.query_params.get("coverId")
+            or guid_of(request)
+        )
+        item = track(guid)
+        if not item:
+            return await forward(request)
+        await identity(request)
+        # Covers use their own image validator; audio-only open_media is deliberately not reused.
+        from .images import image_response
+
+        return await image_response(
+            app.state.media.client, item["cover"], request.method == "HEAD"
+        )
+
+    @app.post(PREFIX + "favorite-track/create")
+    async def like(request: Request):
+        body = await request.json()
+        guid = str(body.get("trackGUID") or body.get("guid") or "")
+        if not track(guid):
+            return await forward(request)
+        user = await identity(request)
+        app.state.store.like(user, guid)
+        app.state.playlists.invalidate(user)
+        return envelope(None)
+
+    @app.post(PREFIX + "favorite-track/delete")
+    async def unlike(request: Request):
+        body = await request.json()
+        guid = str(body.get("trackGUID") or body.get("guid") or "")
+        user = await identity(request)
+        if not track(guid):
+            bound = [
+                j for j in app.state.store.jobs(user) if j["official_guid"] == guid
+            ]
+            if not bound:
+                return await forward(request)
+            # The App now displays the official GUID; clear each matching user intent.
+            await app.state.official.api(
+                "POST",
+                PREFIX + "favorite-track/delete",
+                request.headers,
+                json={"trackGUID": guid},
+            )
+            for job in bound:
+                app.state.store.unlike(user, job["guid"])
+            app.state.playlists.invalidate(user)
+            return envelope(None)
+        job = next((j for j in app.state.store.jobs(user) if j["guid"] == guid), None)
+        app.state.store.unlike(user, guid)
+        app.state.playlists.invalidate(user)
+        if job and job["official_guid"]:
+            await app.state.official.api(
+                "POST",
+                PREFIX + "favorite-track/delete",
+                request.headers,
+                json={"trackGUID": job["official_guid"]},
+            )
+        return envelope(None)
+
+    @app.get(PREFIX + "favorite-track/list")
+    async def favorites(request: Request):
+        user = await identity(request)
+        page, size = page_args(request)
+        data = await app.state.official.list_all(
+            PREFIX + "favorite-track/list", request.headers
+        )
+        data = data or {"list": [], "total": 0}
+        bound = {j["guid"] for j in app.state.store.jobs(user) if j["state"] == "done"}
+        online = [
+            to_official(t, True)
+            for t in app.state.store.favorites(user)
+            if t["guid"] not in bound
+        ]
+        rows = online + data.get("list", [])
+        return envelope(
+            dict(data, list=rows[(page - 1) * size : page * size], total=len(rows))
+        )
+
+    @app.get(PREFIX + "playlist/list")
+    @app.get(PREFIX + "playlist/list/{subpath:path}")
+    async def playlist_list(request: Request):
+        user = await identity(request)
+        page, size = page_args(request)
+        data = await app.state.official.list_all(
+            PREFIX + "playlist/list", request.headers
+        )
+        data = data or {"list": [], "total": 0}
+        rows = app.state.playlists.cards(user) + data.get("list", [])
+        return envelope(
+            dict(data, list=rows[(page - 1) * size : page * size], total=len(rows))
+        )
+
+    @app.get(PREFIX + "playlist/detail")
+    async def playlist_detail(request: Request):
+        user = await identity(request)
+        guid = guid_of(request)
+        card = next(
+            (c for c in app.state.playlists.cards(user) if c["guid"] == guid), None
+        )
+        if not card:
+            return await forward(request)
+        rows = await app.state.playlists.tracks(user, guid)
+        return envelope(dict(card, trackCount=len(rows)))
+
+    @app.get(PREFIX + "playlist/batch-detail")
+    async def playlist_batch(request: Request):
+        user = await identity(request)
+        guids = [
+            g.strip()
+            for g in (request.query_params.get("guids") or guid_of(request)).split(",")
+            if g.strip()
+        ]
+        cards = {row["guid"]: row for row in app.state.playlists.cards(user)}
+        online = [cards[g] for g in guids if g in cards]
+        rest = [g for g in guids if g not in cards]
+        if not online:
+            return await forward(request)
+        official = []
+        if rest:
+            data = await app.state.official.api(
+                "GET",
+                PREFIX + "playlist/batch-detail",
+                request.headers,
+                params={"guids": ",".join(rest)},
+            )
+            official = data if isinstance(data, list) else (data or {}).get("list", [])
+        return envelope({"list": online + official})
+
+    @app.get(PREFIX + "track/playlist-detail/list")
+    async def playlist_tracks(request: Request):
+        user = await identity(request)
+        guid = request.query_params.get("playlistGUID") or guid_of(request)
+        try:
+            app.state.playlists.key(user, guid)
+        except KeyError:
+            return await forward(request)
+        page, size = page_args(request)
+        rows = await app.state.playlists.tracks(user, guid)
+        return envelope(
+            {
+                "list": [
+                    to_official(t, app.state.store.is_liked(user, t["guid"]))
+                    for t in rows[(page - 1) * size : page * size]
+                ],
+                "total": len(rows),
+            }
+        )
+
+    @app.api_route(
+        "/{path:path}",
+        methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    )
+    async def passthrough(request: Request, path: str):
+        return await forward(request)
+
+    return app

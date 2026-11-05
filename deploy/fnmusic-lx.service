@@ -1,0 +1,19 @@
+[Unit]
+Description=LX-first extension for official fnOS Music
+After=fnmusic-lxserver.service
+Requires=fnmusic-lxserver.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/fnmusic-lx
+ExecStart=/opt/fnmusic-lx/.venv/bin/python -m fnmusic --env /opt/fnmusic-lx/.env
+ExecStartPost=/opt/fnmusic-lx/.venv/bin/python -m scripts.wait_ready --socket /var/run/fnmusic-lx.socket
+ExecStartPost=/opt/fnmusic-lx/.venv/bin/python -m scripts.socket_control enable --state /opt/fnmusic-lx/data/takeover.json
+ExecStop=/opt/fnmusic-lx/.venv/bin/python -m scripts.socket_control restore --state /opt/fnmusic-lx/data/takeover.json
+ExecStopPost=/opt/fnmusic-lx/.venv/bin/python -m scripts.socket_control restore --state /opt/fnmusic-lx/data/takeover.json
+Restart=no
+TimeoutStopSec=30
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
