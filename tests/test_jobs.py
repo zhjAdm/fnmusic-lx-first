@@ -262,3 +262,70 @@ async def test_missing_probe_waits_without_consuming_attempts_then_resumes(tmp_p
     await jobs.run_once("a", {})
     assert store.jobs("a")[0]["state"] == "done"
     store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('local_file', [False, True])
+async def test_waiting_for_official_binding_logs_transition_once(tmp_path, local_file):
+    from fnmusic.logs import read_events
+
+    store = Store(tmp_path / 'state.db')
+    track = store.save_track(RAW)
+    store.like('a', track['guid'])
+    config = Config(data_dir=tmp_path / 'data')
+    path = tmp_path / 'existing.flac'
+    path.write_bytes(b'checked-audio')
+    official = Official()
+    downloader = Download(tmp_path)
+    jobs = Jobs(store, FakeLX(), downloader, official, config)
+
+    class Index:
+        async def ensure_scanned(self):
+            pass
+
+        def find_duplicate(self, track):
+            return {'path': str(path)} if local_file else None
+
+    jobs.library = Index()
+    await jobs.run_once('a', {})
+    for _ in range(3):
+        store.update_job('a', track['guid'], next_at=0)
+        # A process restart must not restart repetitive status messages.
+        jobs = Jobs(store, FakeLX(), downloader, official, config)
+        jobs.library = Index()
+        await jobs.run_once('a', {})
+    rows = read_events(config.data_dir)
+    if local_file:
+        assert store.jobs('a')[0]['path'] == ''
+    assert len([r for r in rows if r['event'] == 'download.skipped']) == int(local_file)
+    assert len([r for r in rows if r['event'] == 'playlist.waiting']) == 1
+    assert downloader.calls == ([] if local_file else ['master', 'flac'])
+    official.ready = True
+    store.update_job('a', track['guid'], next_at=0)
+    await jobs.run_once('a', {})
+    assert store.jobs('a')[0]['state'] == 'done'
+    assert len([r for r in read_events(config.data_dir) if r['event'] == 'playlist.completed']) == 1
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_missing_download_is_diagnosed_without_hiding_new_download(tmp_path):
+    from fnmusic.logs import read_events
+
+    store = Store(tmp_path / 'state.db')
+    track = store.save_track(RAW)
+    store.like('a', track['guid'])
+    config = Config(data_dir=tmp_path / 'data')
+    downloader = Download(tmp_path)
+    jobs = Jobs(store, FakeLX(), downloader, Official(), config)
+    await jobs.run_once('a', {})
+    downloaded = store.file(track['guid'])
+    os.unlink(downloaded['path'])
+    store.update_job('a', track['guid'], next_at=0)
+    await jobs.run_once('a', {})
+    rows = read_events(config.data_dir)
+    assert len([r for r in rows if r['event'] == 'audio.downloaded']) == 2
+    missing = [r for r in rows if r['event'] == 'download.file_unavailable']
+    assert len(missing) == 1 and missing[0]['state'] == 'missing_or_empty'
+    assert 'path' not in missing[0]
+    store.close()

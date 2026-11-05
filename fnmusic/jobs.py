@@ -1,6 +1,7 @@
 import asyncio
 import time
 from collections import defaultdict
+from pathlib import Path
 
 from fastapi import HTTPException
 
@@ -66,7 +67,7 @@ class Jobs:
                 try:
                     if await self.official.user(headers) != user:
                         raise HTTPException(401, "User changed")
-                    await self.process(user, guid, headers)
+                    await self.process(user, guid, headers, job=job)
                 except asyncio.CancelledError:
                     raise
                 except (MissingTool, IndexNotReady) as exc:
@@ -146,7 +147,17 @@ class Jobs:
             error="处理失败；请检查音源、曲库扫描和歌单配置后重试",
         )
 
-    async def process(self, user, guid, headers):
+    async def process(self, user, guid, headers, *, job):
+        waiting = job["state"] == "waiting_scan"
+        indexed = False
+
+        def same_waiting_file(path):
+            # Indexed paths stay private: an empty persisted path identifies
+            # an indexed-file wait, without exposing library directories in jobs.
+            return waiting and (
+                job["path"] == str(path) or (indexed and not job["path"])
+            )
+
         if not self.store.is_liked(user, guid):
             return
         track = self.store.get_track(guid)
@@ -160,25 +171,41 @@ class Jobs:
                 return
             existing = self.store.file(guid) or self.store.recording_file(track)
             if local:
+                indexed = True
                 path = local["path"]
-                event(
-                    self.config.data_dir,
-                    "jobs",
-                    "download.skipped",
-                    task=guid,
-                    state="local_index",
-                )
+                if not same_waiting_file(path):
+                    event(
+                        self.config.data_dir,
+                        "jobs",
+                        "download.skipped",
+                        task=guid,
+                        state="local_index",
+                    )
             elif existing:
                 path = existing["path"]
                 self.store.save_file(guid, path, existing["quality"])
-                event(
-                    self.config.data_dir,
-                    "jobs",
-                    "download.skipped",
-                    task=guid,
-                    state="existing_extension_file",
-                )
+                if not same_waiting_file(path):
+                    event(
+                        self.config.data_dir,
+                        "jobs",
+                        "download.skipped",
+                        task=guid,
+                        state="existing_extension_file",
+                    )
             else:
+                if waiting and job["path"]:
+                    previous = Path(job["path"])
+                    try:
+                        reason = (
+                            "cache_miss" if previous.is_file() and previous.stat().st_size
+                            else "missing_or_empty"
+                        )
+                    except OSError:
+                        reason = "unreadable"
+                    event(
+                        self.config.data_dir, "jobs", "download.file_unavailable",
+                        level="WARNING", task=guid, state=reason,
+                    )
                 self.store.update_job(user, guid, state="downloading")
                 supported = await self.lx.qualities(track["source"])
                 for quality in supported:
@@ -211,13 +238,18 @@ class Jobs:
             user,
             guid,
             state="waiting_scan",
-            path="" if local else str(path),
+            path="" if indexed else str(path),
             next_at=time.time() + 15,
         )
         # Local indexing never calls the official scan API. Official lookup is
         # only needed to associate this exact file with an App playlist GUID.
         local = await self.official.find_local(track, headers, path=path)
         if not local:
+            if not same_waiting_file(path):
+                event(
+                    self.config.data_dir, "jobs", "playlist.waiting",
+                    task=guid, state="waiting_scan",
+                )
             return
         if not self.store.is_liked(user, guid):
             return
