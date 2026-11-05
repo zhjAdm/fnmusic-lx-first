@@ -73,6 +73,18 @@ def native(root, target=None):
         shutil.move(str(temp / "package"), module)
 
 
+def restrict_listener(root):
+    path = Path(root) / "server/index.js"
+    content = path.read_text()
+    original = "startServer(global.lx.config.port, '0.0.0.0');"
+    private = "startServer(global.lx.config.port, '127.0.0.1');"
+    if original not in content and content.count(private) == 1:
+        return
+    if content.count(original) != 1:
+        raise RuntimeError("LX listener patch anchor mismatch")
+    path.write_text(content.replace(original, private))
+
+
 def expose_capabilities(root):
     path = Path(root) / "server/server/customSourceHandlers.js"
     content = path.read_text()
@@ -102,6 +114,7 @@ def prepare(root):
         if (root / ".version").read_text() != VERSION:
             raise RuntimeError("Runtime version mismatch")
         expose_capabilities(root)
+        restrict_listener(root)
         return
     if root.exists() and any(root.iterdir()):
         raise RuntimeError("Runtime directory occupied")
@@ -149,6 +162,7 @@ def prepare(root):
             root.rmdir()
         shutil.move(str(entries[0].parent), root)
         expose_capabilities(root)
+        restrict_listener(root)
         (root / ".version").write_text(VERSION)
 
 

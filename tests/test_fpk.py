@@ -71,3 +71,16 @@ def test_failed_force_stop_cannot_report_success(monkeypatch):
         lifecycle.stop()
     assert ("stop", ("fnmusic-lx-proxy.service",)) in calls
     assert ("stop", ("fnmusic-lx-source.service",)) in calls
+
+
+def test_working_directory_is_a_literal_absolute_path_not_a_quoted_word(tmp_path):
+    # systemd's WorkingDirectory parser does not unquote shell-style words.
+    # Quoted paths are rejected as non-absolute even when their contents start /.
+    root = tmp_path / "app with spaces"
+    for text in render_units(root, tmp_path / "var").values():
+        line = next(
+            line for line in text.splitlines() if line.startswith("WorkingDirectory=")
+        )
+        value = line.partition("=")[2]
+        assert value == str(root.resolve() / "code")
+        assert value.startswith("/")

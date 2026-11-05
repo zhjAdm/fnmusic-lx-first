@@ -103,7 +103,10 @@ def render_units(root, state):
     node = quote(root / "runtime/node/bin/node")
     env = state / "worker.env"
     code = root / "code"
-    shared = f"{MARKER}\n[Unit]\nAfter=network.target\n\n[Service]\nType=simple\nWorkingDirectory={quote(code)}\nEnvironment={quote('PYTHONPATH=' + str(root / 'site') + ':' + str(code))}\nEnvironment={quote('PATH=' + str(root / 'runtime/node/bin') + ':' + str(root / 'runtime/python/bin') + ':/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin')}\nUMask=0077\n"
+    # WorkingDirectory is a literal path, not an ExecStart/Environment word.
+    # systemd retains enclosing quotes here and rejects the path as non-absolute.
+    working_directory = str(code).replace("%", "%%")
+    shared = f"{MARKER}\n[Unit]\nAfter=network.target\n\n[Service]\nType=simple\nWorkingDirectory={working_directory}\nEnvironment={quote('PYTHONPATH=' + str(root / 'site') + ':' + str(code))}\nEnvironment={quote('PATH=' + str(root / 'runtime/node/bin') + ':' + str(root / 'runtime/python/bin') + ':/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin')}\nUMask=0077\n"
     source = (
         shared
         + f"Environment={quote('DATA_PATH=' + str(state / 'lxserver'))}\nEnvironment={quote('CONFIG_PATH=' + str(state / 'lxserver/config.js'))}\nEnvironment=PORT=18775\nEnvironment=BIND_IP=127.0.0.1\nExecStart={node} {quote(root / 'lxserver/index.js')}\nRestart=on-failure\nRestartSec=5\n"

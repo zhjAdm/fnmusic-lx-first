@@ -1,10 +1,10 @@
 # 飞牛音乐 LX 扩展
 
-保留官方飞牛音乐 Web / App，接入用户自有的 LX 自定义音源。当前为 **0.1.2 开发版**，已完成本机自动化验证，尚未在真实 fnOS 和官方手机 App 上验收。
+保留官方飞牛音乐 Web / App，接入用户自有的 LX 自定义音源。当前为 **0.1.3 开发版**，已完成本机自动化验证，尚未在真实 fnOS 和官方手机 App 上验收。
 
 ## 推荐：直接安装 FPK
 
-从 `dist/` 选择 `fnmusic-lx-first-0.1.2-x86.fpk`（Intel/AMD）或 `fnmusic-lx-first-0.1.2-arm.fpk`（ARM64），在飞牛应用中心手动安装。软件包自带 Linux Python、Node 和 LX 服务；FFmpeg / ffprobe 优先复用 NAS 已有兼容版本，缺少时由管理员在管理页按需下载，不需要手动部署源码或在 NAS 上安装 Python 依赖。安装和普通播放不会自动下载音频组件。需已安装官方飞牛音乐。
+从 `dist/` 选择 `fnmusic-lx-first-0.1.3-x86.fpk`（Intel/AMD）或 `fnmusic-lx-first-0.1.3-arm.fpk`（ARM64），在飞牛应用中心手动安装。软件包自带 Linux Python、Node 和 LX 服务；FFmpeg / ffprobe 优先复用 NAS 已有兼容版本，缺少时由管理员在管理页按需下载，不需要手动部署源码或在 NAS 上安装 Python 依赖。安装和普通播放不会自动下载音频组件。需已安装官方飞牛音乐。
 
 安装后打开桌面「fnMusic 扩展管理」：
 

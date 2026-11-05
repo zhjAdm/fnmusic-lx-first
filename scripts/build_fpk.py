@@ -12,10 +12,15 @@ import tempfile
 from urllib.parse import urlsplit
 import zipfile
 import zlib
-from scripts.runtime import expose_capabilities, native, SHA256 as LX_SHA
+from scripts.runtime import (
+    expose_capabilities,
+    restrict_listener,
+    native,
+    SHA256 as LX_SHA,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 
 
 def icon(path, size):
@@ -185,6 +190,7 @@ def build(arch, work, out, fnpack, repack=False):
         install_wheels(
             stage, arch, work / "wheels" / ("x86_64" if arch == "x86" else "aarch64")
         )
+    restrict_listener(stage / "app/lxserver")
     (stage / "app/runtime-provenance.json").write_text(
         json.dumps({k: v for k, v in assets.items() if k != "ffmpeg"}, indent=2)
     )
