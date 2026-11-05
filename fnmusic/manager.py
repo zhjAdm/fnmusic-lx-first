@@ -195,6 +195,11 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
     async def library_state():
         return JSONResponse(library.state(), headers={"Cache-Control": "no-store"})
 
+    @router.get("/api/library/songs")
+    async def library_songs(q: str = "", page: int = 1, size: int = 25):
+        result = await asyncio.to_thread(library.songs, q, page, size)
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
     @router.post("/api/library")
     async def save_library(request: Request):
         data = await body(request)

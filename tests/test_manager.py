@@ -225,3 +225,14 @@ def test_library_scan_requires_admin_but_no_official_music_session(tmp_path):
         assert state["scan"]["state"] == "completed"
         assert state["scan"]["indexed"] == 1
         assert c.post("/api/library/cancel", json={}, headers=ADMIN).status_code == 200
+
+
+def test_library_song_listing_is_admin_only_and_validates_query(tmp_path):
+    app, _ = manager(tmp_path)
+    with TestClient(app) as c:
+        assert c.get('/api/library/songs').status_code == 403
+        result = c.get('/api/library/songs', headers=ADMIN)
+        assert result.status_code == 200 and result.json()['total'] == 0
+        assert result.headers['cache-control'] == 'no-store'
+        assert c.get('/api/library/songs?page=0', headers=ADMIN).status_code == 422
+        assert c.get('/api/library/songs?size=1000', headers=ADMIN).status_code == 422

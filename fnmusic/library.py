@@ -373,6 +373,41 @@ class Library:
                 raise IndexNotReady("本地扫描已取消，请重新扫描或关闭下载前更新索引")
             await asyncio.sleep(0.25)
 
+    def songs(self, q="", page=1, size=25):
+        if (
+            not isinstance(q, str) or len(q) > 200
+            or type(page) is not int or not 1 <= page <= 1000000
+            or type(size) is not int or not 1 <= size <= 100
+        ):
+            raise ValueError("歌曲列表查询参数无效")
+        result = {"items": [], "total": 0, "page": page, "size": size}
+        roots = self.read()["directories"]
+        if not roots or not self.database.exists():
+            return result
+        where = "root IN (" + ",".join("?" for _ in roots) + ")"
+        params = list(roots)
+        keyword = q.strip().lower()
+        if keyword:
+            where += " AND (" + " OR ".join(
+                f"instr(lower(COALESCE({column},'')), ?) > 0"
+                for column in ("title", "artist", "album", "path")
+            ) + ")"
+            params.extend([keyword] * 4)
+        db = self.connect()
+        try:
+            db.execute("BEGIN")
+            result["total"] = db.execute(
+                "SELECT count(*) FROM audio WHERE " + where, params
+            ).fetchone()[0]
+            result["items"] = [dict(row) for row in db.execute(
+                "SELECT title,artist,album,duration,path,size FROM audio WHERE "
+                + where + " ORDER BY title COLLATE NOCASE,path LIMIT ? OFFSET ?",
+                [*params, size, (page - 1) * size],
+            )]
+            return result
+        finally:
+            db.close()
+
     def find_duplicate(self, track):
         if not self.database.exists():
             return None

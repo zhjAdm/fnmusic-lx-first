@@ -138,3 +138,31 @@ async def test_download_refresh_respects_directory_changes_during_scan(tmp_path)
         )
         is not None
     )
+
+
+@pytest.mark.asyncio
+async def test_song_list_search_pagination_and_configured_roots(tmp_path):
+    lib, music = library(tmp_path)
+    song(music, 'a.wav', title='Alpha', artist='周杰伦')
+    song(music, 'b.wav', title='Beta', album='100%_精选')
+    song(music, 'c.wav', title='<script>曲目</script>')
+    await lib.scan()
+    first = lib.songs(page=1, size=2)
+    second = lib.songs(page=2, size=2)
+    assert first['total'] == second['total'] == 3
+    assert len(first['items']) == 2 and len(second['items']) == 1
+    assert not ({r['path'] for r in first['items']} & {r['path'] for r in second['items']})
+    assert lib.songs(q='周杰伦')['items'][0]['title'] == 'Alpha'
+    assert lib.songs(q='%_')['total'] == 1
+    assert lib.songs(q="' OR 1=1 --")['total'] == 0
+    assert set(first['items'][0]) == {'title','artist','album','duration','path','size'}
+    lib.save([], False)
+    assert lib.songs()['total'] == 0
+
+
+def test_song_list_empty_index_and_limits(tmp_path):
+    lib, _ = library(tmp_path)
+    assert lib.songs() == {'items': [], 'total': 0, 'page': 1, 'size': 25}
+    for kwargs in ({'page': 0}, {'size': 101}, {'q': 'x' * 201}):
+        with pytest.raises(ValueError):
+            lib.songs(**kwargs)
