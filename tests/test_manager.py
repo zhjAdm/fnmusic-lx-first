@@ -1,0 +1,143 @@
+import json
+from pathlib import Path
+from fastapi.testclient import TestClient
+from fnmusic.manager import create_manager
+from fnmusic.config import Config
+
+ADMIN = {"X-Trim-Isadmin": "true", "X-Fnmusic-Request": "1"}
+SCRIPT = "/*! @name My source\n * @version 1.0 */\nconst lx=globalThis.lx;"
+
+
+class Control:
+    active = False
+    starts = 0
+
+    async def running(self):
+        return self.active
+
+    async def enable(self):
+        self.active = True
+        self.starts += 1
+
+    async def disable(self):
+        self.active = False
+
+
+class LX:
+    async def import_script(self, path):
+        return "test-source"
+
+    async def call(self, *args, **kwargs):
+        return {"success": True}
+
+    async def qualities(self, source):
+        return ["320k"]
+
+
+def manager(tmp_path):
+    config = Config(
+        data_dir=tmp_path / "state", download_dir=tmp_path / "not-configured"
+    )
+    env = tmp_path / "worker.env"
+    env.write_text("LX_PASSWORD='fixture-private'\n")
+    control = Control()
+    app = create_manager(
+        config, env, control, LX(), validate_dir=lambda p: Path(p).resolve()
+    )
+    return app, control
+
+
+def test_manager_denies_non_admin_and_mutation_without_csrf_header(tmp_path):
+    app, _ = manager(tmp_path)
+    with TestClient(app) as c:
+        assert c.get("/api/state").status_code == 403
+        assert (
+            c.post(
+                "/api/takeover",
+                json={"enabled": False},
+                headers={"X-Trim-Isadmin": "true"},
+            ).status_code
+            == 403
+        )
+
+
+def test_initial_state_does_not_take_over_and_requires_configuration(tmp_path):
+    app, control = manager(tmp_path)
+    with TestClient(app) as c:
+        state = c.get("/api/state", headers=ADMIN).json()
+        assert state["takeover"] is False and not state["configured"]
+        assert control.starts == 0
+        assert (
+            c.post("/api/takeover", json={"enabled": True}, headers=ADMIN).status_code
+            == 409
+        )
+
+
+def test_ui_configuration_and_takeover_toggle(tmp_path):
+    app, control = manager(tmp_path)
+    with TestClient(app) as c:
+        assert (
+            c.post(
+                "/api/source",
+                json={"name": "private.js", "content": SCRIPT},
+                headers=ADMIN,
+            ).status_code
+            == 200
+        )
+        assert (
+            c.post(
+                "/api/settings",
+                json={"download_dir": str(tmp_path / "music"), "play_mode": "proxy"},
+                headers=ADMIN,
+            ).status_code
+            == 200
+        )
+        assert (
+            c.post("/api/takeover", json={"enabled": True}, headers=ADMIN).status_code
+            == 200
+        )
+        assert control.active
+        state = c.get("/app/fnmusic-lx-first/api/state", headers=ADMIN).json()
+        assert state["takeover"] and state["configured"]
+        assert "content" not in json.dumps(state)
+        assert (
+            c.post("/api/takeover", json={"enabled": False}, headers=ADMIN).status_code
+            == 200
+        )
+        assert not control.active
+        assert (tmp_path / "state" / "private-source.js").read_text() == SCRIPT
+        assert "DOWNLOAD_DIR" in (tmp_path / "worker.env").read_text()
+        assert c.get("/", headers=ADMIN).status_code == 200
+
+
+def test_rejects_ceru_and_strict_boolean(tmp_path):
+    app, _ = manager(tmp_path)
+    with TestClient(app) as c:
+        assert (
+            c.post(
+                "/api/source",
+                json={"name": "source.js", "content": "exports.manifest={}"},
+                headers=ADMIN,
+            ).status_code
+            == 422
+        )
+        assert (
+            c.post(
+                "/api/takeover", json={"enabled": "false"}, headers=ADMIN
+            ).status_code
+            == 422
+        )
+
+
+def test_download_directory_cannot_be_application_data(tmp_path):
+    app, _ = manager(tmp_path)
+    with TestClient(app) as c:
+        response = c.post(
+            "/api/settings",
+            json={
+                "download_dir": str(tmp_path / "state" / "music"),
+                "play_mode": "direct",
+            },
+            headers=ADMIN,
+        )
+        assert response.status_code == 422

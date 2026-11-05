@@ -1,5 +1,5 @@
 include README.md LICENSE THIRD_PARTY_NOTICES.md pyproject.toml requirements.lock .env.example .gitignore
-recursive-include fnmusic *.py
+recursive-include fnmusic *.py *.html *.css *.js
 recursive-include scripts *.py
 recursive-include deploy *.service
 recursive-include docs *.md
@@ -8,3 +8,4 @@ global-exclude __pycache__ *.pyc
 prune work
 prune data
 prune secrets
+recursive-include packaging/fpk *

@@ -1,0 +1,4 @@
+#!/bin/sh
+# The payload may already be gone. No bundled interpreter is needed here.
+systemctl daemon-reload >/dev/null 2>&1 || true
+exit 0

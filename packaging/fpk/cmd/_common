@@ -1,0 +1,19 @@
+#!/bin/bash
+set -euo pipefail
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_BASE="$(cd "${SELF_DIR}/.." && pwd)"
+APP_ROOT=""
+for candidate in "${TRIM_APPDEST:-}" "${APP_BASE}/target" "${APP_BASE}"; do
+    if [ -n "${candidate}" ] && [ -x "${candidate}/runtime/python/bin/python3" ]; then
+        APP_ROOT="$(cd "${candidate}" && pwd)"
+        break
+    fi
+done
+[ -n "${APP_ROOT}" ] || { echo '应用运行文件缺失' >&2; exit 1; }
+APP_STATE="${TRIM_PKGVAR:-${APP_BASE}/var}"
+export PYTHONPATH="${APP_ROOT}/site:${APP_ROOT}/code"
+export PYTHONDONTWRITEBYTECODE=1
+export PATH="${APP_ROOT}/runtime/node/bin:${APP_ROOT}/runtime/ffmpeg/bin:${APP_ROOT}/runtime/python/bin:${PATH}"
+run_lifecycle() {
+    "${APP_ROOT}/runtime/python/bin/python3" -m scripts.fpk_lifecycle "$1" --root "${APP_ROOT}" --state "${APP_STATE}"
+}

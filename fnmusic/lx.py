@@ -1,6 +1,7 @@
 """Small client for the pinned lxserver v2.1.2 HTTP contracts."""
 
 import asyncio
+import anyio
 from pathlib import Path
 
 from .models import quality_order
@@ -87,12 +88,43 @@ class LX:
         )
         if not result.get("success") or not result.get("id"):
             raise ValueError("Script import rejected; inspect lxserver locally")
-        await self.call(
-            "POST",
-            "/api/custom-source/toggle",
-            json={"id": result["id"], "enabled": True},
-        )
-        return result["id"]
+        identifier = result["id"]
+        try:
+            toggled = await self.call(
+                "POST",
+                "/api/custom-source/toggle",
+                json={"id": identifier, "enabled": True},
+            )
+            if toggled.get("success") is not True or toggled.get("enabled") is not True:
+                raise ValueError("Source activation rejected")
+            for _ in range(40):
+                catalog = await self.call("GET", "/api/custom-source/list")
+                rows = (
+                    catalog if isinstance(catalog, list) else catalog.get("sources", [])
+                )
+                loaded = next((row for row in rows if row.get("id") == identifier), {})
+                if (
+                    loaded.get("enabled")
+                    and loaded.get("status") == "success"
+                    and any(
+                        (loaded.get("sources") or {}).get(p, {}).get("qualitys")
+                        for p in self.platforms
+                    )
+                ):
+                    return identifier
+                if loaded.get("status") == "failed":
+                    break
+                await asyncio.sleep(0.1)
+            raise ValueError("Source did not register usable platforms")
+        except BaseException:
+            with anyio.CancelScope(shield=True):
+                try:
+                    await self.call(
+                        "POST", "/api/custom-source/delete", json={"id": identifier}
+                    )
+                except Exception:
+                    pass
+            raise
 
     async def lyric(self, raw):
         return await self.call("POST", "/api/music/lyric", json={"songInfo": raw})

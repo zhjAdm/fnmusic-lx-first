@@ -61,3 +61,41 @@ async def test_listener_restart_after_crash_only_removes_owned_socket():
             await asyncio.wait_for(second.wait(), 10)
         assert not sock.exists()
         assert not (root / "music").exists()
+
+
+@pytest.mark.asyncio
+async def test_manager_socket_is_private(tmp_path):
+    with tempfile.TemporaryDirectory(prefix="fnlx-admin-", dir="/tmp") as folder:
+        root = Path(folder)
+        sock = root / "admin.sock"
+        env = root / "settings.env"
+        env.write_text(
+            f"LX_PASSWORD=fixture-password-not-a-secret\nDATA_DIR={root}/state\n"
+        )
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "fnmusic.manager",
+            "--env",
+            str(env),
+            "--socket",
+            str(sock),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            for _ in range(100):
+                if process.returncode is not None:
+                    pytest.fail("Manager failed to start")
+                if sock.exists():
+                    break
+                await asyncio.sleep(0.05)
+            assert sock.stat().st_mode & 0o777 == 0o600
+            async with httpx.AsyncClient(
+                transport=httpx.AsyncHTTPTransport(uds=str(sock)),
+                base_url="http://localhost",
+            ) as c:
+                assert (await c.get("/api/state")).status_code == 403
+        finally:
+            process.terminate()
+            await asyncio.wait_for(process.wait(), 10)

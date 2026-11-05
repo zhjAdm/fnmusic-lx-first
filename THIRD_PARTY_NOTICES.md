@@ -8,3 +8,5 @@
 - User-provided paid music scripts are private inputs. No rights to redistribute them are granted by this project's license; they are not included in source distributions or wheels.
 
 This project is a community extension and is not an official fnOS application.
+
+FPK 0.1.1 additionally bundles Linux CPython from [python-build-standalone](https://github.com/astral-sh/python-build-standalone), official [Node.js](https://nodejs.org), and LGPL-variant [FFmpeg builds](https://github.com/BtbN/FFmpeg-Builds). Original runtime license files are retained. Exact public download URLs and SHA256 values are recorded in `packaging/fpk/assets.lock.json` and the installed payload's `runtime-provenance.json`. The unused Python curses terminfo database is omitted for case-insensitive build-host compatibility.

@@ -23,6 +23,7 @@ def load_env(path):
 @dataclass
 class Config:
     data_dir: Path = Path("data")
+    install_root: Path | None = None
     download_dir: Path = Path("data/music")
     upstream_socket: str = "/var/run/trim_music.original.socket"
     listen_socket: str = "/var/run/fnmusic-lx.socket"
@@ -79,6 +80,7 @@ class Config:
     def from_env(cls):
         env = os.environ
         config = cls(
+            install_root=Path(env["APP_ROOT"]) if env.get("APP_ROOT") else None,
             data_dir=Path(env.get("DATA_DIR", "data")),
             download_dir=Path(env.get("DOWNLOAD_DIR", "data/music")),
             upstream_socket=env.get("UPSTREAM_SOCKET", cls.upstream_socket),

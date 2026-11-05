@@ -1,0 +1,30 @@
+{
+  "x86": {
+    "python": {
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18%2B20261026-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+      "sha256": "df15fe60d3ff55bf9dcf25824b5572756bb8816ff93865a273d3301d7066a8b7"
+    },
+    "ffmpeg": {
+      "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-lgpl.tar.xz",
+      "sha256": "bd3c58d2cd25cd8902e93df13431c1b72c0ee7d6042ce47d16975726c97a5cf5"
+    },
+    "node": {
+      "url": "https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-x64.tar.xz",
+      "sha256": "1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce"
+    }
+  },
+  "arm": {
+    "python": {
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18%2B20261026-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz",
+      "sha256": "578d9da1983463ffb0c8c98ab0da2f18177f44069328eb0af847860c1eb05c3e"
+    },
+    "ffmpeg": {
+      "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linuxarm64-lgpl.tar.xz",
+      "sha256": "a13e220d263241b79872e45389b4a322107ff395119ef9a5940fc4b287ffa66c"
+    },
+    "node": {
+      "url": "https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-arm64.tar.xz",
+      "sha256": "6287aa46b6c375d816e63ae66d024fbbfd70404825aabdfdf898a970871d2f4b"
+    }
+  }
+}

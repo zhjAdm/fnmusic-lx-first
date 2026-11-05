@@ -1,0 +1,13 @@
+appname = fnmusic-lx-first
+version = 0.1.1
+display_name = fnMusic LX 扩展
+desc = 保留官方飞牛音乐，增加 LX 在线音源、歌单推荐及喜欢后下载。音源和下载目录在管理界面配置，默认不接管官方音乐，可手动开关。
+platform = @ARCH@
+source = thirdparty
+maintainer = fnMusic LX contributors
+os_min_version = 1.2.0
+install_dep_apps = trim.music
+desktop_uidir = ui
+desktop_applaunchname = fnmusic-lx-first.main
+checkport = false
+micro_app = true

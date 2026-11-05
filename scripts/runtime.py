@@ -21,7 +21,7 @@ SHA256 = "1f89639366a7d0f968bfb0e56d88701a60d500a555afd52ae2cc7e5ff4742a63"
 URL = f"https://github.com/XCQ0607/lxserver/releases/download/{VERSION}/{ARCHIVE}"
 
 
-def native(root):
+def native(root, target=None):
     machine = {
         "arm64": "arm64",
         "aarch64": "arm64",
@@ -31,7 +31,9 @@ def native(root):
     system = {"Darwin": "darwin", "Linux": "linux"}.get(platform.system())
     if not machine or not system:
         raise RuntimeError("Native runtime supports Linux/macOS x64/ARM64 only")
-    suffix = f"{system}-{machine}" + ("-gnu" if system == "linux" else "")
+    suffix = target or f"{system}-{machine}" + ("-gnu" if system == "linux" else "")
+    if suffix not in {"linux-arm64-gnu", "linux-x64-gnu", "darwin-arm64", "darwin-x64"}:
+        raise RuntimeError("Unsupported native target")
     package = f"music-tag-native-{suffix}"
     module = Path(root) / "node_modules" / package
     if (module / "package.json").exists():

@@ -1,6 +1,18 @@
 # 飞牛音乐 LX 扩展
 
-保留官方飞牛音乐 Web / App，接入用户自有的 LX 自定义音源。当前为 **0.1.0 开发版**，已完成本机自动化验证，尚未在真实 fnOS 和官方手机 App 上验收。
+保留官方飞牛音乐 Web / App，接入用户自有的 LX 自定义音源。当前为 **0.1.1 开发版**，已完成本机自动化验证，尚未在真实 fnOS 和官方手机 App 上验收。
+
+## 推荐：直接安装 FPK
+
+从 `dist/` 选择 `fnmusic-lx-first-0.1.1-x86.fpk`（Intel/AMD）或 `fnmusic-lx-first-0.1.1-arm.fpk`（ARM64），在飞牛应用中心手动安装。软件包自带 Linux Python、Node、FFmpeg 和 LX 服务，不需要手动部署源码或在 NAS 上安装 Python 依赖。需已安装官方飞牛音乐。
+
+安装后打开桌面「fnMusic 扩展管理」：
+
+1. 上传自己的 LX `.js` 音源脚本。
+2. 填写属于官方曲库扫描范围的下载目录并保存。
+3. 按需打开「接管官方音乐」。默认关闭；关闭时恢复官方直连，管理界面继续运行。
+
+停止应用会恢复官方直连；重新启动会恢复之前已保存的接管偏好。卸载不删除下载目录内的音乐，配置会在存储卷根目录保存私密备份。FPK 是未完成真实 NAS 验收的开发版；管理入口通过飞牛管理员桌面网关访问，不开放独立管理端口。
 
 ## 已实现的行为
 
@@ -84,7 +96,7 @@
    sudo systemctl start fnmusic-lx
    ```
 
-   验证后可自行启用开机启动：`sudo systemctl enable fnmusic-lxserver fnmusic-lx`。本项目尚未提供 FPK 包。
+   验证后可自行启用开机启动：`sudo systemctl enable fnmusic-lxserver fnmusic-lx`。也可直接使用 FPK 安装，见本文开头。
 
 ## 不接管的开发启动
 
