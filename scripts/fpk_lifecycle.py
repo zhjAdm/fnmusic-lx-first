@@ -57,9 +57,14 @@ def initialize(root, state):
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
     state.chmod(0o700)
     values = env_values(state / "worker.env")
+    # Upgrade only the previous shipped default; retain custom source choices.
+    if values.get("LX_PLATFORMS") == "kw,kg,tx,wy,mg":
+        values["LX_PLATFORMS"] = "kg,tx,kw,wy,mg"
+        if values.get("HOT_SOURCE") == "kw" and not values.get("HOT_BOARD"):
+            values["HOT_SOURCE"] = "kg"
     defaults = {
         "LX_PASSWORD": secrets.token_urlsafe(32),
-        "LX_PLATFORMS": "kw,kg,tx,wy,mg",
+        "LX_PLATFORMS": "kg,tx,kw,wy,mg",
         "DOWNLOAD_DIR": str(state / "unconfigured"),
         "PLAY_MODE": "direct",
         "PLAY_QUALITY": "320k",
@@ -67,7 +72,7 @@ def initialize(root, state):
         "SCAN_PATH": "",
         "SCAN_BODY": "{}",
         "PUBLIC_PLAYLISTS": "[]",
-        "HOT_SOURCE": "kw",
+        "HOT_SOURCE": "kg",
         "HOT_BOARD": "",
     }
     for key, value in defaults.items():

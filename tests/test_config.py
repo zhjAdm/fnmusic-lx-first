@@ -16,3 +16,12 @@ def test_environment_file_is_data_not_shell(tmp_path, monkeypatch):
     monkeypatch.delenv("LX_PASSWORD")
     monkeypatch.delenv("PLAY_MODE")
     monkeypatch.delenv("PUBLIC_PLAYLISTS")
+
+
+def test_default_platform_priority_is_kg_then_tx(monkeypatch):
+    monkeypatch.delenv('LX_PLATFORMS', raising=False)
+    monkeypatch.delenv('HOT_SOURCE', raising=False)
+    monkeypatch.setenv('LX_PASSWORD', 'fixture')
+    assert Config().platforms == ['kg', 'tx', 'kw', 'wy', 'mg']
+    assert Config.from_env().platforms == ['kg', 'tx', 'kw', 'wy', 'mg']
+    assert Config.from_env().hot_source == 'kg'

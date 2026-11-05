@@ -29,7 +29,7 @@ class Config:
     listen_socket: str = "/var/run/fnmusic-lx.socket"
     lx_url: str = "http://127.0.0.1:8005"
     lx_password: str = ""
-    platforms: list[str] = field(default_factory=lambda: ["kw", "kg", "tx", "wy", "mg"])
+    platforms: list[str] = field(default_factory=lambda: ["kg", "tx", "kw", "wy", "mg"])
     play_mode: str = "direct"
     play_quality: str = "320k"
     playlist_name: str = "默认歌单"
@@ -37,7 +37,7 @@ class Config:
     scan_path: str = ""
     scan_body: dict = field(default_factory=dict)
     public_playlists: list[dict] = field(default_factory=list)
-    hot_source: str = "kw"
+    hot_source: str = "kg"
     hot_board: str = ""
     max_download_bytes: int = 1024 * 1024 * 1024
     session_ttl: int = 3600
@@ -87,14 +87,14 @@ class Config:
             listen_socket=env.get("LISTEN_SOCKET", cls.listen_socket),
             lx_url=env.get("LX_URL", cls.lx_url),
             lx_password=env.get("LX_PASSWORD", ""),
-            platforms=env.get("LX_PLATFORMS", "kw,kg,tx,wy,mg").split(","),
+            platforms=env.get("LX_PLATFORMS", "kg,tx,kw,wy,mg").split(","),
             play_mode=env.get("PLAY_MODE", "direct"),
             play_quality=env.get("PLAY_QUALITY", "320k"),
             default_playlist_guid=env.get("DEFAULT_PLAYLIST_GUID", ""),
             scan_path=env.get("SCAN_PATH", ""),
             scan_body=json.loads(env.get("SCAN_BODY", "{}")),
             public_playlists=json.loads(env.get("PUBLIC_PLAYLISTS", "[]")),
-            hot_source=env.get("HOT_SOURCE", "kw"),
+            hot_source=env.get("HOT_SOURCE", "kg"),
             hot_board=env.get("HOT_BOARD", ""),
         )
         if not config.lx_password:

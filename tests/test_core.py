@@ -86,3 +86,22 @@ async def test_lx_contract(tmp_path):
     assert (await lx.resolve(RAW, "flac"))["url"].startswith("https://")
     assert await lx.qualities("kw") == ["flac", "128k"]
     await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kg_fails', [False, True])
+async def test_search_preserves_platform_priority_when_a_platform_fails(kg_fails):
+    from fnmusic.config import Config
+
+    def response(request):
+        source = request.url.params['source']
+        if kg_fails and source == 'kg':
+            return httpx.Response(503)
+        return httpx.Response(200, json=[dict(RAW, source=source)])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(response), base_url='http://lx') as client:
+        lx = LX(client, 'fixture', Config().platforms)
+        result = await lx.search('歌曲')
+        assert [r['source'] for r in result] == (
+            ['tx', 'kw', 'wy', 'mg'] if kg_fails else ['kg', 'tx', 'kw', 'wy', 'mg']
+        )

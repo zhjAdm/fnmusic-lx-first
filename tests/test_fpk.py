@@ -137,3 +137,24 @@ def test_logging_storage_failure_does_not_prevent_lifecycle_stop(tmp_path):
         text=True,
     )
     assert result.returncode == 0 and marker.exists()
+
+
+def test_upgrade_old_platform_default_but_preserve_custom_configuration(tmp_path):
+    from scripts.fpk_lifecycle import env_values
+
+    root = tmp_path / 'app'
+    root.mkdir()
+    for name, platforms, expected in [
+        ('legacy', 'kw,kg,tx,wy,mg', 'kg,tx,kw,wy,mg'),
+        ('custom', 'wy,tx', 'wy,tx'),
+    ]:
+        state = tmp_path / name
+        state.mkdir()
+        (state / 'worker.env').write_text(
+            f'LX_PASSWORD=fixture-password-long-enough\nLX_PLATFORMS={platforms}\nHOT_SOURCE=kw\n'
+        )
+        initialize(root, state)
+        values = env_values(state / 'worker.env')
+        assert values['LX_PLATFORMS'] == expected
+        assert values['LX_PASSWORD'] == 'fixture-password-long-enough'
+        assert values['HOT_SOURCE'] == ('kg' if name == 'legacy' else 'kw')
