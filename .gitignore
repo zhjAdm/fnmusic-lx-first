@@ -1,0 +1,12 @@
+/*-music-source-*.js
+/secrets/
+/.env
+/.venv/
+/work/
+/data/
+/logs/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
