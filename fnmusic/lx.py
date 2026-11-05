@@ -13,7 +13,9 @@ class LX:
         self.client.headers["x-frontend-auth"] = password
 
     async def call(self, method, path, **kwargs):
-        response = await self.client.request(method, path, **kwargs)
+        response = await self.client.request(
+            method, path, extensions={"fnmusic_upstream": "lx"}, **kwargs
+        )
         response.raise_for_status()
         return response.json()
 
@@ -43,7 +45,8 @@ class LX:
         )
         successes = [g for g in groups if isinstance(g, list)]
         if not successes:
-            raise RuntimeError("LX search unavailable")
+            cause = next((item for item in groups if isinstance(item, Exception)), None)
+            raise RuntimeError("LX search unavailable") from cause
         return [row for group in successes for row in group][:limit]
 
     async def resolve(self, raw, quality):

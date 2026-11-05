@@ -4,6 +4,7 @@ import asyncio
 from collections import deque
 from datetime import datetime, timezone
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -52,15 +53,76 @@ def error_summary(error):
     response = getattr(error, "response", None)
     if response is not None:
         result["http_status"] = response.status_code
+    elif type(getattr(error, "status_code", None)) is int:
+        result["http_status"] = error.status_code
     if type(getattr(error, "official_code", None)) is int:
         result["official_code"] = error.official_code
     if isinstance(error, ImportError) and error.name:
         result["module"] = str(error.name)[:120]
+    try:
+        request = getattr(error, "request", None)
+    except RuntimeError:
+        request = None
+    if request is not None:
+        upstream = request.extensions.get("fnmusic_upstream", "unknown")
+        if upstream not in {"official", "lx", "media", "image"}:
+            upstream = "unknown"
+        result.update(upstream=upstream, method=request.method)
+        result["route"] = (
+            safe_route(request.url.path)
+            if upstream in {"official", "lx"}
+            else "[remote-media]"
+        )
+    elif error.__cause__ is not None and error.__cause__ is not error:
+        cause = error.__cause__
+        try:
+            cause_request = getattr(cause, "request", None)
+        except RuntimeError:
+            cause_request = None
+        if cause_request is not None:
+            detail = error_summary(cause)
+            result["cause"] = {
+                key: detail[key]
+                for key in ("type", "upstream", "method", "route")
+                if key in detail
+            }
+    frames = traceback.extract_tb(error.__traceback__)
+    own = [f for f in frames if "/fnmusic/" in f.filename.replace("\\", "/")]
+    selected = (
+        own[-4:] + [f for f in frames[-2:] if f not in own] if own else frames[-6:]
+    )
     result["frames"] = [
         {"file": Path(f.filename).name, "line": f.lineno, "function": f.name}
-        for f in traceback.extract_tb(error.__traceback__)[-6:]
+        for f in selected
     ]
     return result
+
+
+def safe_route(path):
+    # Retain route names, not IDs, filenames, or any query string.
+    parts = str(path).split("?", 1)[0].strip("/").split("/")[:5]
+    return "/" + "/".join(
+        part
+        if re.fullmatch(r"[a-z][a-z0-9_-]{0,47}", part)
+        and not re.fullmatch(r"[a-f0-9]{24,}", part)
+        else ":id"
+        for part in parts
+    )
+
+
+def activity(
+    data_dir, name, *, user=None, track=None, level="INFO", error=None, **fields
+):
+    if user is not None:
+        fields["user"] = "user_" + hashlib.sha256(str(user).encode()).hexdigest()[:12]
+    if track:
+        fields.update(
+            title=track.get("title", ""),
+            artist=track.get("artist", ""),
+            source=track.get("source", ""),
+            task=track.get("guid", ""),
+        )
+    event(data_dir, "history", name, level=level, error=error, **fields)
 
 
 def event(data_dir, component, name, *, level="INFO", error=None, **fields):
@@ -84,6 +146,19 @@ def event(data_dir, component, name, *, level="INFO", error=None, **fields):
             "task",
             "quality",
             "state",
+            "keyword",
+            "title",
+            "artist",
+            "source",
+            "user",
+            "mode",
+            "total",
+            "returned",
+            "page",
+            "cache_hit",
+            "duration_ms",
+            "route",
+            "method",
         }
         for key, value in fields.items():
             if key in allowed:
@@ -120,7 +195,10 @@ def event(data_dir, component, name, *, level="INFO", error=None, **fields):
 
 
 def validate_query(source, level, limit):
-    if source not in ("events", "services", "bootstrap") or level not in LEVELS:
+    if (
+        source not in ("events", "services", "bootstrap", "history")
+        or level not in LEVELS
+    ):
         raise ValueError("日志来源或级别无效")
     if type(limit) is not int or not 1 <= limit <= 500:
         raise ValueError("日志条数应为 1–500")
@@ -140,7 +218,7 @@ def tail_bytes(path, maximum=MAX_BYTES):
     return data.decode("utf-8", errors="replace")
 
 
-def read_events(data_dir, level="ALL", limit=200):
+def read_events(data_dir, level="ALL", limit=200, component=None):
     validate_query("events", level, limit)
     folder = Path(data_dir) / "logs"
     result = deque(maxlen=limit)
@@ -153,8 +231,10 @@ def read_events(data_dir, level="ALL", limit=200):
         for line in text.splitlines():
             try:
                 row = json.loads(line)
-                if isinstance(row, dict) and (
-                    level == "ALL" or row.get("level") == level
+                if (
+                    isinstance(row, dict)
+                    and (level == "ALL" or row.get("level") == level)
+                    and (component is None or row.get("component") == component)
                 ):
                     result.append(row)
             except ValueError:
@@ -245,6 +325,11 @@ async def collect(data_dir, source="events", level="ALL", limit=200, secrets=())
         result = {
             "entries": rows if level in ("ALL", "ERROR") else [],
             "note": "" if text else "暂无启动失败日志。",
+        }
+    elif source == "history":
+        result = {
+            "entries": read_events(data_dir, level, limit, component="history"),
+            "note": "",
         }
     else:
         result = {"entries": read_events(data_dir, level, limit), "note": ""}

@@ -114,11 +114,15 @@ async def test_online_failure_uses_local(tmp_path):
             return {"guid": "local"}
 
         async def stream(self, *args):
-            return "local-stream"
+            from starlette.responses import Response
+
+            return Response("local-stream")
 
     async with httpx.AsyncClient() as c:
         media = Media(c, Broken(), Local(), store, Config())
-        assert await media.play(track, "a", {}, None, False) == "local-stream"
+        response = await media.play(track, "a", {}, None, False)
+        assert response.body == b"local-stream"
+        assert response.fnmusic_mode == "local"
     store.close()
 
 

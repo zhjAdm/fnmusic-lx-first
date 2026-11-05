@@ -13,7 +13,10 @@ async def image_response(client, url, head=False):
         await public_url(url)
         response = await client.send(
             client.build_request(
-                "GET", url, headers={"accept": "image/*", "accept-encoding": "identity"}
+                "GET",
+                url,
+                headers={"accept": "image/*", "accept-encoding": "identity"},
+                extensions={"fnmusic_upstream": "image"},
             ),
             stream=True,
             follow_redirects=False,

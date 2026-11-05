@@ -1,5 +1,5 @@
 (()=>{'use strict';
-const $=id=>document.getElementById(id);let busy=false;let current={};let dirty=false;
+const $=id=>document.getElementById(id);let busy=false;let current={};let dirty=false;let currentView='settings';const logLevels={logs:'ALL',history:'ALL'};
 const base=new URL('./',location.href);
 function message(text,error=false){$('message').textContent=text;$('message').className='visible'+(error?' error':'');}
 async function api(path,body){const response=await fetch(new URL('api/'+path,base),{method:body===undefined?'GET':'POST',credentials:'same-origin',headers:body===undefined?{}:{'Content-Type':'application/json','X-Fnmusic-Request':'1'},body:body===undefined?undefined:JSON.stringify(body)});let result;try{result=await response.json();}catch{throw Error('管理服务没有返回有效响应，请从飞牛桌面重新打开应用。');}if(!response.ok)throw Error(result.error||result.detail||'操作失败，请稍后重试');return result;}
@@ -16,14 +16,14 @@ async function refresh(){if(busy)return;try{render(await api('state'));}catch(er
 $('tools-download').addEventListener('click',()=>action(async()=>{await api('tools/download',{});render(await api('state'));message('已开始准备音频组件，可以在此查看进度。');}));
 
 let logBusy=false;
-const logNames={'service.started':'服务已启动','service.stopped':'服务已停止','source.upload':'上传音源','settings.save':'保存设置','takeover.change':'切换官方接管','tools.download':'请求下载音频组件','tools.started':'开始准备音频组件','tools.ready':'音频组件已就绪','tools.failed':'音频组件准备失败','processing.failed':'收藏任务处理失败','audio.downloaded':'音频下载完成','playlist.completed':'已加入默认歌单','retry.scheduled':'任务等待重试','retry.exhausted':'任务重试次数已用尽','index.waiting':'任务等待本地曲库索引','tools.waiting':'任务等待音频组件','download.skipped':'重复歌曲已跳过下载','scan.started':'本地曲库扫描开始','scan.completed':'本地曲库索引更新完成','scan.cancelled':'本地曲库扫描已取消','scan.failed':'本地曲库扫描失败','search.local_failed':'本地搜索失败，已尝试在线结果','search.online_failed':'在线搜索失败','search.row_skipped':'已跳过不完整的在线歌曲','process.failed':'服务进程异常','upstream.failed':'上游请求失败'};
-function logQuery(){return new URLSearchParams({source:$('log-source').value,level:$('log-level').value});}
+const logNames={'search.completed':'搜索完成','search.failed':'搜索失败','play.requested':'收到播放请求','play.redirect':'已返回在线直链','play.proxy_started':'中转供流已开始','play.local_forwarded':'本地播放请求已转发','play.playlist_forwarded':'官方HLS清单已转发','play.hls_started':'HLS供流已开始','play.failed':'播放请求失败','play.quality_failed':'该音质取源或供流失败','play.source_failed':'在线音源查询失败','play.direct_fallback':'直链探测失败，尝试中转','service.started':'服务已启动','service.stopped':'服务已停止','source.upload':'上传音源','settings.save':'保存设置','takeover.change':'切换官方接管','tools.download':'请求下载音频组件','tools.started':'开始准备音频组件','tools.ready':'音频组件已就绪','tools.failed':'音频组件准备失败','processing.failed':'收藏任务处理失败','audio.downloaded':'音频下载完成','playlist.completed':'已加入默认歌单','retry.scheduled':'任务等待重试','retry.exhausted':'任务重试次数已用尽','index.waiting':'任务等待本地曲库索引','tools.waiting':'任务等待音频组件','download.skipped':'重复歌曲已跳过下载','scan.started':'本地曲库扫描开始','scan.completed':'本地曲库索引更新完成','scan.cancelled':'本地曲库扫描已取消','scan.failed':'本地曲库扫描失败','search.local_failed':'本地搜索失败，已尝试在线结果','search.online_failed':'在线搜索失败','search.row_skipped':'已跳过不完整的在线歌曲','process.failed':'服务进程异常','upstream.failed':'上游请求失败'};
+function logQuery(){return new URLSearchParams({source:currentView==='history'?'history':$('log-source').value,level:$('log-level').value});}
 function logLink(){$('log-download').href=new URL('api/logs/download?'+logQuery(),base).href;}
-async function loadLogs(){if(logBusy)return;logBusy=true;const requested=logQuery().toString();$('log-refresh').disabled=true;try{const result=await api('logs?'+requested);$('log-output').textContent=result.entries.map(row=>{const time=row.time?new Date(row.time).toLocaleString('zh-CN',{hour12:false}):'';const title=row.message||logNames[row.event]||row.event||'';const detail=Object.fromEntries(Object.entries(row).filter(([key])=>!['time','level','component','event','message'].includes(key)));return `${time} [${row.level}] ${row.component} · ${title}`+(Object.keys(detail).length?'\n'+JSON.stringify(detail):'');}).join('\n\n')||'暂无匹配的日志。';$('log-note').textContent=result.note||`已加载 ${result.entries.length} 条记录 · ${new Date().toLocaleTimeString('zh-CN')} 更新`;}catch(error){$('log-note').textContent='日志读取失败：'+error.message;}finally{logBusy=false;$('log-refresh').disabled=busy;if(requested!==logQuery().toString())loadLogs();}}
+async function loadLogs(){if(logBusy)return;logBusy=true;const requested=logQuery().toString();$('log-refresh').disabled=true;try{const result=await api('logs?'+requested);if(!['logs','history'].includes(currentView)||requested!==logQuery().toString())return;$('log-output').textContent=result.entries.map(row=>{const time=row.time?new Date(row.time).toLocaleString('zh-CN',{hour12:false}):'';const title=(row.message||logNames[row.event]||row.event||'')+(row.component==='history'?(row.keyword!==undefined?' · '+row.keyword:row.title?' · '+row.title+(row.artist?' / '+row.artist:''):''):'');const detail=Object.fromEntries(Object.entries(row).filter(([key])=>!['time','level','component','event','message'].includes(key)));return `${time} [${row.level}] ${row.component} · ${title}`+(Object.keys(detail).length?'\n'+JSON.stringify(detail):'');}).join('\n\n')||'暂无匹配的日志。';$('log-note').textContent=result.note||`已加载 ${result.entries.length} 条记录 · ${new Date().toLocaleTimeString('zh-CN')} 更新`;}catch(error){$('log-note').textContent='日志读取失败：'+error.message;}finally{logBusy=false;$('log-refresh').disabled=busy;if(['logs','history'].includes(currentView)&&requested!==logQuery().toString())loadLogs();}}
 $('log-refresh').addEventListener('click',loadLogs);
 ['log-source','log-level'].forEach(id=>$(id).addEventListener('change',()=>{logLink();loadLogs();}));
 $('log-auto').addEventListener('change',()=>{if($('log-auto').checked)loadLogs();});
-setInterval(()=>{if($('log-auto').checked&&!document.hidden)loadLogs();},5000);
+setInterval(()=>{if(['logs','history'].includes(currentView)&&$('log-auto').checked&&!document.hidden)loadLogs();},5000);
 logLink();
 
 
@@ -35,6 +35,17 @@ $('library-form').addEventListener('input',()=>{libraryDirty=true;});
 $('library-form').addEventListener('submit',event=>{event.preventDefault();action(async()=>{const dirs=$('library-dirs').value.split('\n').map(v=>v.trim()).filter(Boolean);const state=await api('library',{directories:dirs,auto_scan:$('library-auto').checked});libraryDirty=false;renderLibrary(state);message('本地扫描目录已保存。');});});
 $('library-scan').addEventListener('click',()=>action(async()=>{if(libraryDirty)throw Error('请先保存扫描目录。');renderLibrary(await api('library/scan',{}));message('本地目录扫描已开始，可以查看统计进度。');}));
 $('library-cancel').addEventListener('click',()=>action(async()=>{renderLibrary(await api('library/cancel',{}));message('已请求取消本地扫描。');}));
-refreshLibrary();setInterval(refreshLibrary,2000);
-refresh();setInterval(refresh,2000);
+const menuPages={
+settings:{title:'扩展设置',eyebrow:'YOUR MUSIC, YOUR WAY',description:'保留熟悉的飞牛音乐，为它接上你的在线音源。'},
+library:{title:'本地曲库',eyebrow:'YOUR LOCAL COLLECTION',description:'管理扫描目录，直接读取音频标签，识别已有歌曲。'},
+tools:{title:'音频组件',eyebrow:'AUDIO TOOLS',description:'复用已有音频组件，仅在需要时下载。'},
+history:{title:'搜索与播放',eyebrow:'LISTENING HISTORY',description:'查看近期搜索词、歌曲请求和服务端供流记录。'},
+logs:{title:'运行日志',eyebrow:'DIAGNOSTICS',description:'定位启动、音源、收藏任务与接口异常。'}
+};
+function activateMenu(focus=false){const requested=location.hash.slice(1);const next=menuPages[requested]?requested:'settings';if(['logs','history'].includes(currentView))logLevels[currentView]=$('log-level').value;currentView=next;document.querySelectorAll('[data-view]').forEach(el=>el.hidden=el.dataset.view!==(next==='history'?'logs':next));document.querySelectorAll('[data-menu]').forEach(el=>{const active=el.dataset.menu===next;el.classList.toggle('selected',active);if(active)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current');});const page=menuPages[next];$('page-eyebrow').textContent=page.eyebrow;$('page-description').textContent=page.description;$('page-title').textContent=next==='settings'?'让音乐，':page.title;if(next==='settings'){const emphasis=document.createElement('em');emphasis.textContent='连接起来。';$('page-title').append(emphasis);}document.title=page.title+' · fnMusic';$('message').className='';if(['logs','history'].includes(next)){$('log-level').value=logLevels[next];$('log-source').parentElement.hidden=next==='history';$('logs-title').textContent=next==='history'?'最近搜索与播放':'运行记录';$('log-description').textContent=next==='history'?'仅记录服务端请求与供流状态，不将返回直链视为手机播放成功。':'选择日志来源和级别，查看具体服务与接口异常。';$('log-output').textContent='正在加载记录…';logLink();loadLogs();}else if(next==='library'){refreshLibrary();}else{refresh();}if(focus){window.scrollTo(0,0);$('page-title').focus({preventScroll:true});}}
+window.addEventListener('hashchange',()=>activateMenu(true));
+activateMenu();
+refresh();
+setInterval(()=>{if(['settings','tools'].includes(currentView))refresh();},2000);
+setInterval(()=>{if(currentView==='library')refreshLibrary();},2000);
 })();

@@ -4,6 +4,7 @@ from starlette.responses import Response
 
 from .models import normalize
 from .streams import ClosingStream
+from .logs import event
 
 AUTH_HEADERS = {"cookie", "authorization", "x-auth-token", "x-access-token"}
 
@@ -48,7 +49,11 @@ class Official:
 
     async def api(self, method, path, headers, **kwargs):
         response = await self.client.request(
-            method, path, headers=session_headers(headers), **kwargs
+            method,
+            path,
+            headers=session_headers(headers),
+            extensions={"fnmusic_upstream": "official"},
+            **kwargs,
         )
         if response.status_code in (401, 403):
             raise HTTPException(401, "飞牛登录已失效")
@@ -65,7 +70,14 @@ class Official:
             data = await self.api("GET", "/music/api/v1/user/me", headers)
         except HTTPException:
             raise
-        except (httpx.HTTPError, ValueError):
+        except (httpx.HTTPError, ValueError) as exc:
+            event(
+                self.config.data_dir,
+                "proxy",
+                "identity.failed",
+                level="ERROR",
+                error=exc,
+            )
             raise HTTPException(503, "无法确认飞牛登录状态") from None
         if not isinstance(data, dict) or not data.get("guid"):
             raise HTTPException(401, "无法确认用户身份")
@@ -152,7 +164,11 @@ class Official:
 
     async def passthrough(self, method, path, headers, content=b""):
         request = self.client.build_request(
-            method, path, headers=forward_headers(headers), content=content
+            method,
+            path,
+            headers=forward_headers(headers),
+            content=content,
+            extensions={"fnmusic_upstream": "official"},
         )
         response = await self.client.send(request, stream=True)
         clean = forward_headers(response.headers)

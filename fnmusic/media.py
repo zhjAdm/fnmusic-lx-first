@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from starlette.responses import RedirectResponse, Response
 from .streams import ClosingStream
 from .models import QUALITIES, quality_order
+from .logs import event
 
 MEDIA_HEADERS = {
     "content-type",
@@ -56,7 +57,9 @@ async def open_media(client, method, url, headers=None):
     for _ in range(6):
         await public_url(url)
         response = await client.send(
-            client.build_request(method, url, headers=safe),
+            client.build_request(
+                method, url, headers=safe, extensions={"fnmusic_upstream": "media"}
+            ),
             stream=True,
             follow_redirects=False,
         )
@@ -155,18 +158,47 @@ class Media:
                         target, range_header, head, force_proxy=force_proxy
                     )
                     self.remember(user, track["guid"], target)
+                    result.fnmusic_mode = (
+                        "direct" if result.status_code == 302 else "proxy"
+                    )
+                    result.fnmusic_quality = quality
                     return result
-                except (httpx.HTTPError, ValueError, OSError, StopAsyncIteration):
+                except (
+                    httpx.HTTPError,
+                    ValueError,
+                    OSError,
+                    StopAsyncIteration,
+                ) as exc:
+                    event(
+                        self.config.data_dir,
+                        "proxy",
+                        "play.quality_failed",
+                        level="WARNING",
+                        error=exc,
+                        task=track["guid"],
+                        quality=quality,
+                        source=track.get("source", ""),
+                    )
                     continue
-        except (httpx.HTTPError, ValueError, OSError, RuntimeError):
-            pass
+        except (httpx.HTTPError, ValueError, OSError, RuntimeError) as exc:
+            event(
+                self.config.data_dir,
+                "proxy",
+                "play.source_failed",
+                level="WARNING",
+                error=exc,
+                task=track["guid"],
+                source=track.get("source", ""),
+            )
         if self.official:
             local = await self.official.find_local(track, headers)
             if local:
                 self.remember(user, track["guid"], {"local": local["guid"]})
-                return await self.official.stream(
+                result = await self.official.stream(
                     local["guid"], headers, range_header, head
                 )
+                result.fnmusic_mode = "local"
+                return result
         raise HTTPException(502, "在线音源和本地曲库均无可用资源")
 
     async def deliver(self, target, range_header, head, *, force_proxy=False):
@@ -191,8 +223,8 @@ class Media:
                         "Referrer-Policy": "no-referrer",
                     },
                 )
-            except (httpx.HTTPError, ValueError, OSError):
-                pass  # Some CDNs reject the probe but permit a normal stream.
+            except (httpx.HTTPError, ValueError, OSError) as exc:
+                event(self.config.data_dir, "proxy", "play.direct_fallback", error=exc)
         if range_header:
             media_headers["range"] = range_header
         response = await open_media(

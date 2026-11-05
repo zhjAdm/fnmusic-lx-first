@@ -15,7 +15,7 @@ from .official import Official
 from .playlists import Playlists
 from .store import Store
 from .transcode import Transcode
-from .logs import event
+from .logs import event, activity, safe_route
 
 PREFIX = "/music/api/v1/"
 
@@ -80,7 +80,15 @@ def create_app(
 
     @app.exception_handler(ValueError)
     async def value_error(request, exc):
-        event(config.data_dir, "proxy", "response.invalid", level="ERROR", error=exc)
+        event(
+            config.data_dir,
+            "proxy",
+            "response.invalid",
+            level="ERROR",
+            error=exc,
+            route=safe_route(request.url.path),
+            method=request.method,
+        )
         return JSONResponse(
             {"code": -1, "msg": "音源或官方接口响应异常，请检查配置", "data": None},
             status_code=502,
@@ -88,13 +96,22 @@ def create_app(
 
     @app.exception_handler(httpx.HTTPError)
     async def upstream_error(request, exc):
-        event(config.data_dir, "proxy", "upstream.failed", level="ERROR", error=exc)
+        event(
+            config.data_dir,
+            "proxy",
+            "upstream.failed",
+            level="ERROR",
+            error=exc,
+            route=safe_route(request.url.path),
+            method=request.method,
+        )
         return JSONResponse(
             {"code": -1, "msg": "上游服务不可用", "data": None}, status_code=502
         )
 
     async def identity(request):
         user = await app.state.official.user(request.headers)
+        request.state.music_user = user
         app.state.jobs.touch(user, request.headers)
         return user
 
@@ -154,9 +171,7 @@ def create_app(
         )
         return envelope(None)
 
-    @app.get(PREFIX + "search/track")
-    @app.get(PREFIX + "search/track/{subpath:path}")
-    async def search(request: Request):
+    async def search_impl(request: Request):
         user = await identity(request)
         page, size = page_args(request)
         keyword = (
@@ -168,6 +183,7 @@ def create_app(
             )
         key = (user, keyword)
         cached = search_cache.get(key)
+        request.state.search_cached = bool(cached and cached[0] >= time.monotonic())
         if not cached or cached[0] < time.monotonic():
             local_ok, online_ok = True, True
             try:
@@ -223,20 +239,161 @@ def create_app(
             {"list": online[(page - 1) * size : page * size], "total": len(online)}
         )
 
+    @app.get(PREFIX + "search/track")
+    @app.get(PREFIX + "search/track/{subpath:path}")
+    async def search(request: Request):
+        started = time.monotonic()
+        keyword = (
+            request.query_params.get("keyword") or request.query_params.get("q") or ""
+        )
+        try:
+            result = await search_impl(request)
+            data = result.get("data") or {}
+            rows = data.get("list", [])
+            activity(
+                config.data_dir,
+                "search.completed",
+                user=request.state.music_user,
+                keyword=keyword,
+                total=data.get("total", len(rows)),
+                returned=len(rows),
+                cache_hit=getattr(request.state, "search_cached", False),
+                duration_ms=round((time.monotonic() - started) * 1000),
+            )
+            return result
+        except Exception as exc:
+            user = getattr(request.state, "music_user", None)
+            if user is not None:
+                activity(
+                    config.data_dir,
+                    "search.failed",
+                    user=user,
+                    keyword=keyword,
+                    level="ERROR",
+                    error=exc,
+                    duration_ms=round((time.monotonic() - started) * 1000),
+                )
+            raise
+
+    def first_play_request(request):
+        interval = request.headers.get("range", "")
+        return request.method == "GET" and (
+            not interval or interval.startswith("bytes=0-")
+        )
+
+    def playback_note(name, request, item, user=None, **fields):
+        activity(
+            config.data_dir,
+            name,
+            user=user,
+            track=item,
+            route=safe_route(request.url.path),
+            method=request.method,
+            **fields,
+        )
+
+    def native_track(guid):
+        for expires, rows in search_cache.values():
+            if expires < time.monotonic():
+                continue
+            for row in rows:
+                if row.get("guid") == guid:
+                    artists = row.get("artists") or []
+                    return {
+                        "guid": guid,
+                        "title": row.get("title") or row.get("name") or "官方曲库歌曲",
+                        "artist": "、".join(
+                            str(a.get("name") or "")
+                            for a in artists
+                            if isinstance(a, dict)
+                        ),
+                        "source": "official",
+                    }
+        safe_id = (
+            guid
+            if len(guid) == 32 and all(c in "0123456789abcdefABCDEF" for c in guid)
+            else ""
+        )
+        return {
+            "guid": safe_id,
+            "title": "官方曲库歌曲（未取得曲目信息）",
+            "source": "official",
+        }
+
     @app.api_route(PREFIX + "track/stream", methods=["GET", "HEAD"])
     @app.api_route(PREFIX + "track/stream/{subpath:path}", methods=["GET", "HEAD"])
     async def stream(request: Request):
         item = track(guid_of(request))
+        record = first_play_request(request)
         if not item:
-            return await forward(request)
+            item = native_track(guid_of(request))
+            try:
+                response = await forward(request)
+                if record and response.status_code < 400:
+                    playback_note(
+                        "play.local_forwarded",
+                        request,
+                        item,
+                        mode="official",
+                        status=response.status_code,
+                    )
+                return response
+            except Exception as exc:
+                if record:
+                    playback_note(
+                        "play.failed",
+                        request,
+                        item,
+                        level="ERROR",
+                        error=exc,
+                        mode="official",
+                    )
+                raise
         user = await identity(request)
-        return await app.state.media.play(
-            item,
-            user,
-            request.headers,
-            request.headers.get("range"),
-            request.method == "HEAD",
-        )
+        if record:
+            playback_note("play.requested", request, item, user, mode=config.play_mode)
+        started = time.monotonic()
+        try:
+            response = await app.state.media.play(
+                item,
+                user,
+                request.headers,
+                request.headers.get("range"),
+                request.method == "HEAD",
+            )
+            if record:
+                mode = getattr(response, "fnmusic_mode", "proxy")
+                outcome = (
+                    "play.redirect"
+                    if mode == "direct"
+                    else "play.local_forwarded"
+                    if mode == "local"
+                    else "play.proxy_started"
+                )
+                playback_note(
+                    outcome if response.status_code < 400 else "play.failed",
+                    request,
+                    item,
+                    user,
+                    level="INFO" if response.status_code < 400 else "ERROR",
+                    mode=mode,
+                    quality=getattr(response, "fnmusic_quality", ""),
+                    status=response.status_code,
+                    duration_ms=round((time.monotonic() - started) * 1000),
+                )
+            return response
+        except Exception as exc:
+            if record:
+                playback_note(
+                    "play.failed",
+                    request,
+                    item,
+                    user,
+                    level="ERROR",
+                    error=exc,
+                    duration_ms=round((time.monotonic() - started) * 1000),
+                )
+            raise
 
     @app.get(PREFIX + "track/lyrics")
     @app.get(PREFIX + "track/lyrics/{subpath:path}")
@@ -273,7 +430,29 @@ def create_app(
     async def hls(request: Request, guid: str, filename: str):
         item = track(guid)
         if not item:
-            return await forward(request)
+            record = request.method == "GET" and filename.endswith(".m3u8")
+            try:
+                response = await forward(request)
+                if record and response.status_code < 400:
+                    playback_note(
+                        "play.playlist_forwarded",
+                        request,
+                        native_track(guid),
+                        mode="official_hls",
+                        status=response.status_code,
+                    )
+                return response
+            except Exception as exc:
+                if record:
+                    playback_note(
+                        "play.failed",
+                        request,
+                        native_track(guid),
+                        mode="official_hls",
+                        level="ERROR",
+                        error=exc,
+                    )
+                raise
         user = await identity(request)
         from starlette.responses import Response
 
@@ -287,7 +466,34 @@ def create_app(
         if filename == "audio.aac":
             if request.method == "HEAD":
                 return Response(media_type="audio/aac")
-            return await app.state.transcode.audio(item, user, request.headers)
+            record = first_play_request(request)
+            if record:
+                playback_note("play.requested", request, item, user, mode="hls")
+            try:
+                response = await app.state.transcode.audio(item, user, request.headers)
+                if record:
+                    playback_note(
+                        "play.hls_started",
+                        request,
+                        item,
+                        user,
+                        mode="hls",
+                        quality="aac_128k",
+                        status=response.status_code,
+                    )
+                return response
+            except Exception as exc:
+                if record:
+                    playback_note(
+                        "play.failed",
+                        request,
+                        item,
+                        user,
+                        mode="hls",
+                        level="ERROR",
+                        error=exc,
+                    )
+                raise
         raise HTTPException(404)
 
     @app.get(PREFIX + "track/metadata")

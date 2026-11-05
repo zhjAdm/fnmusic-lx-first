@@ -135,3 +135,48 @@ def test_logging_failure_cannot_break_business_operation(tmp_path, monkeypatch):
 
     monkeypatch.setattr(logs.os, "open", denied)
     logs.event(tmp_path, "manager", "settings.saved")
+
+
+def test_timeout_diagnostic_contains_upstream_and_safe_route_not_query_or_secrets(
+    tmp_path,
+):
+    import httpx
+
+    request = httpx.Request(
+        "GET",
+        "http://official/music/api/v1/search/track?q=private-keyword&token=secret",
+        extensions={"fnmusic_upstream": "official"},
+    )
+    error = httpx.ReadTimeout("https://secret.test/?key=never-log", request=request)
+    logs.event(tmp_path, "proxy", "upstream.failed", level="ERROR", error=error)
+    row = logs.read_events(tmp_path)[0]["error"]
+    assert row["upstream"] == "official"
+    assert row["method"] == "GET"
+    assert row["route"] == "/music/api/v1/search/track"
+    text = json.dumps(row)
+    assert "secret" not in text and "private-keyword" not in text and "?q=" not in text
+
+
+def test_remote_media_timeout_never_records_url_path():
+    import httpx
+
+    request = httpx.Request(
+        "GET",
+        "https://host/private-signature/song.mp3?key=secret",
+        extensions={"fnmusic_upstream": "media"},
+    )
+    row = logs.error_summary(httpx.ReadTimeout("failure", request=request))
+    assert row["upstream"] == "media"
+    assert "private-signature" not in json.dumps(row)
+    assert row["route"] == "[remote-media]"
+
+
+@pytest.mark.asyncio
+async def test_activity_filter_only_returns_search_and_play_events(tmp_path):
+    logs.event(tmp_path, "history", "search.completed", keyword="青花瓷", total=5)
+    logs.event(tmp_path, "manager", "settings.save")
+    logs.event(tmp_path, "history", "play.redirect", title="青花瓷")
+    result = await logs.collect(tmp_path, source="history")
+    assert len(result["entries"]) == 2
+    assert result["entries"][0]["keyword"] == "青花瓷"
+    assert all(r["component"] == "history" for r in result["entries"])

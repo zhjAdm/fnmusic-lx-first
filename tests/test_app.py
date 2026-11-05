@@ -240,3 +240,234 @@ def test_local_search_failure_does_not_hide_online_results(tmp_path):
 
     failures = [r for r in read_events(tmp_path) if r["event"] == "search.local_failed"]
     assert failures[0]["error"]["official_code"] == 123
+
+
+def test_authenticated_search_history_records_keyword_result_and_cache_not_cookie(
+    tmp_path,
+):
+    from fnmusic.logs import read_events
+
+    def official(req):
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {"guid": "private-user-guid"}
+                if req.url.path.endswith("user/me")
+                else {"list": [], "total": 0},
+            },
+        )
+
+    oc = httpx.AsyncClient(
+        base_url="http://official", transport=httpx.MockTransport(official)
+    )
+    lc = httpx.AsyncClient(
+        base_url="http://lx",
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json=[RAW])),
+    )
+    app = create_app(
+        Config(data_dir=tmp_path, platforms=["kw"]),
+        oc,
+        lc,
+        httpx.AsyncClient(),
+        worker=False,
+    )
+    with TestClient(app) as c:
+        for _ in range(2):
+            assert (
+                c.get(
+                    "/music/api/v1/search/track?q=青花瓷",
+                    headers={"cookie": "credential-secret"},
+                ).status_code
+                == 200
+            )
+    rows = [r for r in read_events(tmp_path) if r["component"] == "history"]
+    assert len(rows) == 2
+    assert rows[0]["keyword"] == "青花瓷" and rows[0]["total"] == 1
+    assert rows[1]["cache_hit"] is True
+    assert "credential-secret" not in str(rows) and "private-user-guid" not in str(rows)
+
+
+def test_timeout_log_identifies_actual_forwarded_official_route(tmp_path):
+    from fnmusic.logs import read_events
+
+    def timeout(req):
+        raise httpx.ReadTimeout("sensitive raw text", request=req)
+
+    oc = httpx.AsyncClient(
+        base_url="http://official", transport=httpx.MockTransport(timeout)
+    )
+    app = create_app(
+        Config(data_dir=tmp_path),
+        oc,
+        httpx.AsyncClient(),
+        httpx.AsyncClient(),
+        worker=False,
+    )
+    with TestClient(app) as c:
+        assert c.get("/music/api/v1/events/poll?token=private").status_code == 502
+    row = next(r for r in read_events(tmp_path) if r["event"] == "upstream.failed")
+    assert row["error"]["upstream"] == "official"
+    assert row["error"]["route"] == "/music/api/v1/events/poll"
+    assert any(f["file"] == "official.py" for f in row["error"]["frames"])
+    assert "private" not in str(row) and "sensitive" not in str(row)
+
+
+def test_play_history_distinguishes_redirect_and_ignores_head_and_continuation(
+    tmp_path,
+):
+    from fnmusic.logs import read_events
+
+    def official(req):
+        return httpx.Response(200, json={"code": 0, "data": {"guid": "user-a"}})
+
+    def lx(req):
+        if req.url.path.endswith("/list"):
+            return httpx.Response(
+                200, json=[{"enabled": True, "sources": {"kw": {"qualitys": ["320k"]}}}]
+            )
+        return httpx.Response(
+            200, json={"url": "https://93.184.216.34/audio?signature=private"}
+        )
+
+    oc = httpx.AsyncClient(
+        base_url="http://official", transport=httpx.MockTransport(official)
+    )
+    lc = httpx.AsyncClient(base_url="http://lx", transport=httpx.MockTransport(lx))
+    mc = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda r: httpx.Response(
+                206, content=b"a", headers={"content-type": "audio/mpeg"}
+            )
+        )
+    )
+    app = create_app(
+        Config(data_dir=tmp_path, platforms=["kw"]), oc, lc, mc, worker=False
+    )
+    with TestClient(app) as c:
+        guid = app.state.store.save_track(RAW)["guid"]
+        url = "/music/api/v1/track/stream?guid=" + guid
+        assert (
+            c.get(
+                url, headers={"cookie": "private-cookie"}, follow_redirects=False
+            ).status_code
+            == 302
+        )
+        assert (
+            c.head(
+                url, headers={"cookie": "private-cookie"}, follow_redirects=False
+            ).status_code
+            == 302
+        )
+        assert (
+            c.get(
+                url,
+                headers={"cookie": "private-cookie", "range": "bytes=1-"},
+                follow_redirects=False,
+            ).status_code
+            == 302
+        )
+    rows = [r for r in read_events(tmp_path) if r["component"] == "history"]
+    assert [r["event"] for r in rows] == ["play.requested", "play.redirect"]
+    assert rows[-1]["title"] == RAW["name"] and rows[-1]["quality"] == "320k"
+    assert "signature" not in str(rows) and "private-cookie" not in str(rows)
+
+
+def test_native_local_play_history_preserves_transparent_forward_without_extra_calls(
+    tmp_path,
+):
+    from fnmusic.logs import read_events
+
+    calls = []
+
+    def official(req):
+        calls.append(req)
+        return httpx.Response(
+            200, content=b"local-audio", headers={"content-type": "audio/mpeg"}
+        )
+
+    oc = httpx.AsyncClient(
+        base_url="http://official", transport=httpx.MockTransport(official)
+    )
+    app = create_app(
+        Config(data_dir=tmp_path),
+        oc,
+        httpx.AsyncClient(),
+        httpx.AsyncClient(),
+        worker=False,
+    )
+    with TestClient(app) as c:
+        response = c.get(
+            "/music/api/v1/track/stream?guid=" + "a" * 32,
+            headers={"cookie": "private-cookie"},
+        )
+        assert response.content == b"local-audio"
+    assert len(calls) == 1
+    row = next(r for r in read_events(tmp_path) if r["event"] == "play.local_forwarded")
+    assert row["source"] == "official" and row["task"] == "a" * 32
+    assert "private-cookie" not in str(row)
+
+
+def test_identity_timeout_logs_interface_without_unauthenticated_search_term(tmp_path):
+    from fnmusic.logs import read_events
+
+    def timeout(req):
+        raise httpx.ReadTimeout("credential-must-not-appear", request=req)
+
+    oc = httpx.AsyncClient(
+        base_url="http://official", transport=httpx.MockTransport(timeout)
+    )
+    app = create_app(
+        Config(data_dir=tmp_path),
+        oc,
+        httpx.AsyncClient(),
+        httpx.AsyncClient(),
+        worker=False,
+    )
+    with TestClient(app) as c:
+        assert (
+            c.get(
+                "/music/api/v1/search/track?q=private-search",
+                headers={"cookie": "private-cookie"},
+            ).status_code
+            == 503
+        )
+    rows = read_events(tmp_path)
+    failure = next(r for r in rows if r["event"] == "identity.failed")
+    assert failure["error"]["upstream"] == "official"
+    assert failure["error"]["route"] == "/music/api/v1/user/me"
+    assert "private-search" not in str(rows) and "private-cookie" not in str(rows)
+
+
+def test_hls_range_retry_is_not_a_second_play_record(tmp_path):
+    from starlette.responses import Response
+    from fnmusic.logs import read_events
+
+    oc = httpx.AsyncClient(
+        base_url="http://official",
+        transport=httpx.MockTransport(
+            lambda r: httpx.Response(200, json={"code": 0, "data": {"guid": "a"}})
+        ),
+    )
+    app = create_app(
+        Config(data_dir=tmp_path),
+        oc,
+        httpx.AsyncClient(),
+        httpx.AsyncClient(),
+        worker=False,
+    )
+    with TestClient(app) as c:
+        guid = app.state.store.save_track(RAW)["guid"]
+
+        async def audio(*args):
+            return Response(b"aac", media_type="audio/aac")
+
+        app.state.transcode.audio = audio
+        url = "/music/api/v1/track/hls/" + guid + "/audio.aac"
+        assert c.get(url, headers={"cookie": "valid"}).status_code == 200
+        assert (
+            c.get(url, headers={"cookie": "valid", "range": "bytes=1-"}).status_code
+            == 200
+        )
+    rows = [r for r in read_events(tmp_path) if r["component"] == "history"]
+    assert [r["event"] for r in rows] == ["play.requested", "play.hls_started"]
