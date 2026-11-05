@@ -23,6 +23,16 @@ MEDIA_HEADERS = {
 }
 
 
+class MediaResponseError(ValueError):
+    """Keep response metadata for safe diagnostics, without a URL in the message."""
+
+    def __init__(self, response, reason):
+        super().__init__("Audio response rejected")
+        self.response = response
+        self.request = response.request
+        self.reason = reason
+
+
 async def public_url(url):
     value = urlsplit(url)
     if (
@@ -67,12 +77,12 @@ async def open_media(client, method, url, headers=None):
             location = response.headers.get("location")
             await response.aclose()
             if not location:
-                raise ValueError("Missing media redirect")
+                raise MediaResponseError(response, "redirect_without_location")
             url = urljoin(url, location)
             continue
         if response.status_code not in (200, 206):
             await response.aclose()
-            raise ValueError("Audio upstream unavailable")
+            raise MediaResponseError(response, "http_status")
         content_type = response.headers.get("content-type", "").lower()
         if not (
             content_type.startswith("audio/")
@@ -80,9 +90,9 @@ async def open_media(client, method, url, headers=None):
             or "application/ogg" in content_type
         ):
             await response.aclose()
-            raise ValueError("Upstream did not return audio")
+            raise MediaResponseError(response, "not_audio")
         return response
-    raise ValueError("Too many media redirects")
+    raise MediaResponseError(response, "redirect_limit")
 
 
 async def stream_response(response, head=False):
@@ -145,6 +155,7 @@ class Media:
             return await self.deliver(
                 target, range_header, head, force_proxy=force_proxy
             )
+        last_error = None
         try:
             qualities = await self.lx.qualities(track["source"])
             floor = QUALITIES.index(self.config.play_quality)
@@ -169,6 +180,7 @@ class Media:
                     OSError,
                     StopAsyncIteration,
                 ) as exc:
+                    last_error = exc
                     event(
                         self.config.data_dir,
                         "proxy",
@@ -181,6 +193,7 @@ class Media:
                     )
                     continue
         except (httpx.HTTPError, ValueError, OSError, RuntimeError) as exc:
+            last_error = exc
             event(
                 self.config.data_dir,
                 "proxy",
@@ -199,7 +212,7 @@ class Media:
                 )
                 result.fnmusic_mode = "local"
                 return result
-        raise HTTPException(502, "在线音源和本地曲库均无可用资源")
+        raise HTTPException(502, "在线音源和本地曲库均无可用资源") from last_error
 
     async def deliver(self, target, range_header, head, *, force_proxy=False):
         url = target["url"]

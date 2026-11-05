@@ -182,3 +182,59 @@ async def test_unavailable_play_quality_downgrades_to_declared_quality(tmp_path)
         response = await m.play(t, "a", {}, None, False)
         assert response.status_code == 302
     s.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status', [204, 403, 404, 429, 500])
+async def test_media_rejection_keeps_status_and_safe_request_diagnostics(status):
+    from fnmusic.media import open_media
+    from fnmusic.logs import error_summary
+    import json
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(status, headers={'x-private': 'private-header'})
+    )) as client:
+        with pytest.raises(ValueError) as caught:
+            await open_media(client, 'GET', 'https://93.184.216.34/private/audio?signature=private-key')
+        detail = error_summary(caught.value)
+        assert detail['http_status'] == status
+        assert detail['reason'] == 'http_status'
+        assert detail['upstream'] == 'media'
+        assert detail['route'] == '[remote-media]'
+        assert caught.value.response.is_closed
+        assert 'private' not in json.dumps(detail)
+
+
+@pytest.mark.asyncio
+async def test_media_html_response_is_distinct_from_http_failure():
+    from fnmusic.media import open_media
+    from fnmusic.logs import error_summary
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, headers={'content-type': 'text/html'}, text='private body')
+    )) as client:
+        with pytest.raises(ValueError) as caught:
+            await open_media(client, 'GET', 'https://93.184.216.34/audio')
+        detail = error_summary(caught.value)
+        assert detail['http_status'] == 200 and detail['reason'] == 'not_audio'
+        assert caught.value.response.is_closed
+
+
+@pytest.mark.asyncio
+async def test_final_play_failure_retains_safe_last_media_cause(tmp_path):
+    from fnmusic.logs import error_summary
+
+    store = Store(tmp_path / 's.db')
+    track = store.save_track(RAW)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(403)
+    )) as client:
+        media = Media(client, FakeLX(), None, store, Config(data_dir=tmp_path / 'data'))
+        with pytest.raises(HTTPException) as caught:
+            await media.play(track, 'a', {}, None, False, force_proxy=True)
+        detail = error_summary(caught.value)
+        assert detail['http_status'] == 502
+        assert detail['cause']['http_status'] == 403
+        assert detail['cause']['upstream'] == 'media'
+        assert detail['cause']['reason'] == 'http_status'
+    store.close()

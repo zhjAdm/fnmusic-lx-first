@@ -57,6 +57,11 @@ def error_summary(error):
         result["http_status"] = error.status_code
     if type(getattr(error, "official_code", None)) is int:
         result["official_code"] = error.official_code
+    reason = getattr(error, "reason", None)
+    if type(reason) is str and reason in {
+        "http_status", "not_audio", "redirect_without_location", "redirect_limit"
+    }:
+        result["reason"] = reason
     if isinstance(error, ImportError) and error.name:
         result["module"] = str(error.name)[:120]
     try:
@@ -83,7 +88,7 @@ def error_summary(error):
             detail = error_summary(cause)
             result["cause"] = {
                 key: detail[key]
-                for key in ("type", "upstream", "method", "route")
+                for key in ("type", "upstream", "method", "route", "http_status", "reason", "errno")
                 if key in detail
             }
     frames = traceback.extract_tb(error.__traceback__)
