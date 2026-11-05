@@ -7,6 +7,8 @@ from fastapi import HTTPException
 from .official import session_headers
 from .tools import MissingTool
 from .logs import event
+from .models import recording_key
+from .library import Library, IndexNotReady
 
 
 class Jobs:
@@ -18,6 +20,7 @@ class Jobs:
             official,
             config,
         )
+        self.library = Library(config)
         self.sessions = {}
         self.user_locks = defaultdict(asyncio.Lock)
         self.file_locks = defaultdict(asyncio.Lock)
@@ -66,21 +69,27 @@ class Jobs:
                     await self.process(user, guid, headers)
                 except asyncio.CancelledError:
                     raise
-                except MissingTool:
+                except (MissingTool, IndexNotReady) as exc:
                     if self.store.is_liked(user, guid):
-                        if job["state"] != "waiting_tools":
+                        if job["state"] not in ("waiting_tools", "waiting_index"):
                             event(
                                 self.config.data_dir,
                                 "jobs",
-                                "tools.waiting",
+                                "index.waiting"
+                                if isinstance(exc, IndexNotReady)
+                                else "tools.waiting",
                                 level="WARNING",
                                 task=guid,
                             )
                         self.store.update_job(
                             user,
                             guid,
-                            state="waiting_tools",
-                            error="缺少 FFmpeg 音频组件，请在扩展管理页面下载",
+                            state="waiting_index"
+                            if isinstance(exc, IndexNotReady)
+                            else "waiting_tools",
+                            error="请先完成本地曲库扫描"
+                            if isinstance(exc, IndexNotReady)
+                            else "缺少 FFmpeg 音频组件，请在扩展管理页面下载",
                             next_at=time.time() + 30,
                         )
                 except HTTPException as exc:
@@ -141,18 +150,44 @@ class Jobs:
         if not self.store.is_liked(user, guid):
             return
         track = self.store.get_track(guid)
-        previous = next(j for j in self.store.jobs(user) if j["guid"] == guid)
-        async with self.file_locks[guid]:
-            existing = self.store.file(guid)
-            if existing:
+        local = None
+        async with self.file_locks[recording_key(track)]:
+            if not self.store.is_liked(user, guid):
+                return
+            await self.library.ensure_scanned()
+            local = await asyncio.to_thread(self.library.find_duplicate, track)
+            if not self.store.is_liked(user, guid):
+                return
+            existing = self.store.file(guid) or self.store.recording_file(track)
+            if local:
+                path = local["path"]
+                event(
+                    self.config.data_dir,
+                    "jobs",
+                    "download.skipped",
+                    task=guid,
+                    state="local_index",
+                )
+            elif existing:
                 path = existing["path"]
+                self.store.save_file(guid, path, existing["quality"])
+                event(
+                    self.config.data_dir,
+                    "jobs",
+                    "download.skipped",
+                    task=guid,
+                    state="existing_extension_file",
+                )
             else:
                 self.store.update_job(user, guid, state="downloading")
                 supported = await self.lx.qualities(track["source"])
                 for quality in supported:
+                    if not self.store.is_liked(user, guid):
+                        return
                     try:
                         path = await self.audio.download(track, quality)
                         self.store.save_file(guid, path, quality)
+                        self.store.update_job(user, guid, scan_at=0)
                         event(
                             self.config.data_dir,
                             "jobs",
@@ -173,11 +208,14 @@ class Jobs:
         if not self.store.is_liked(user, guid):
             return
         self.store.update_job(
-            user, guid, state="waiting_scan", path=str(path), next_at=time.time() + 15
+            user,
+            guid,
+            state="waiting_scan",
+            path="" if local else str(path),
+            next_at=time.time() + 15,
         )
-        if not previous["scan_at"] or time.time() - previous["scan_at"] >= 300:
-            await self.official.scan(headers)
-            self.store.update_job(user, guid, scan_at=time.time())
+        # Local indexing never calls the official scan API. Official lookup is
+        # only needed to associate this exact file with an App playlist GUID.
         local = await self.official.find_local(track, headers, path=path)
         if not local:
             return

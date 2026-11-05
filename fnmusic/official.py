@@ -6,6 +6,18 @@ from .models import normalize
 from .streams import ClosingStream
 
 AUTH_HEADERS = {"cookie", "authorization", "x-auth-token", "x-access-token"}
+
+
+class OfficialAPIError(ValueError):
+    def __init__(self, data):
+        self.official_code = (
+            data.get("code")
+            if isinstance(data, dict) and type(data.get("code")) is int
+            else None
+        )
+        super().__init__("Official API rejected operation")
+
+
 HOP_HEADERS = {
     "connection",
     "keep-alive",
@@ -43,7 +55,7 @@ class Official:
         response.raise_for_status()
         data = response.json()
         if not isinstance(data, dict) or data.get("code") != 0:
-            raise ValueError("Official API rejected operation")
+            raise OfficialAPIError(data)
         return data.get("data")
 
     async def user(self, headers):
@@ -64,9 +76,15 @@ class Official:
             "GET",
             "/music/api/v1/search/track",
             headers,
-            params={"keyword": title, "page": page, "size": size},
+            params={"q": title, "page": page, "size": size},
         )
-        return data if isinstance(data, dict) else {"list": [], "total": 0}
+        if data is None:
+            return {"list": [], "total": 0}
+        if isinstance(data, dict):
+            for key in ("list", "items", "tracks", "records"):
+                if isinstance(data.get(key), list):
+                    return dict(data, list=data[key])
+        raise ValueError("Official search protocol mismatch")
 
     async def list_all(self, path, headers, **params):
         rows = []
@@ -76,6 +94,13 @@ class Official:
             data = await self.api(
                 "GET", path, headers, params=dict(params, page=page, size=100)
             )
+            if data is None and path == "/music/api/v1/search/track":
+                data = {"list": [], "total": 0}
+            if isinstance(data, dict) and not isinstance(data.get("list"), list):
+                for key in ("items", "tracks", "records"):
+                    if isinstance(data.get(key), list):
+                        data = dict(data, list=data[key])
+                        break
             if not isinstance(data, dict) or not isinstance(data.get("list"), list):
                 raise ValueError("Official list protocol mismatch")
             if page == 1:
@@ -83,12 +108,18 @@ class Official:
             batch = data["list"]
             before = len(rows)
             for row in batch:
+                if not isinstance(row, dict):
+                    continue
                 guid = row.get("guid")
                 if guid and guid not in seen:
                     rows.append(row)
                     seen.add(guid)
             total = data.get("total")
-            if not batch or (isinstance(total, int) and len(rows) >= total):
+            if (
+                not batch
+                or (isinstance(total, int) and len(rows) >= total)
+                or (total is None and len(batch) < 100)
+            ):
                 return dict(first, list=rows, total=len(rows))
             if len(rows) == before:
                 raise ValueError("Official pagination did not advance")
@@ -165,12 +196,6 @@ class Official:
             safe["range"] = range_header
         path = str(httpx.URL("/music/api/v1/track/stream", params={"guid": guid}))
         return await self.passthrough("HEAD" if head else "GET", path, safe)
-
-    async def scan(self, headers):
-        if self.config.scan_path:
-            await self.api(
-                "POST", self.config.scan_path, headers, json=self.config.scan_body
-            )
 
     async def default_playlist(self, headers):
         data = await self.api(

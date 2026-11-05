@@ -145,3 +145,98 @@ def test_cancel_bound_local_guid_clears_online_intent(tmp_path):
         assert response.json()["code"] == 0
         assert not store.is_liked("a", t["guid"])
         assert store.jobs("a")[0]["state"] == "cancelled"
+
+
+def test_native_q_search_does_not_fail_when_internal_local_query_requires_q(tmp_path):
+    def official(req):
+        if req.url.path.endswith("user/me"):
+            return httpx.Response(200, json={"code": 0, "data": {"guid": "a"}})
+        if req.url.params.get("q") != "青花瓷":
+            return httpx.Response(200, json={"code": 400, "data": None})
+        return httpx.Response(200, json={"code": 0, "data": {"list": [], "total": 0}})
+
+    oc = httpx.AsyncClient(
+        base_url="http://official", transport=httpx.MockTransport(official)
+    )
+    lc = httpx.AsyncClient(
+        base_url="http://lx",
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json=[RAW])),
+    )
+    app = create_app(
+        Config(data_dir=tmp_path, platforms=["kw"]),
+        oc,
+        lc,
+        httpx.AsyncClient(),
+        worker=False,
+    )
+    with TestClient(app) as c:
+        result = c.get(
+            "/music/api/v1/search/track?q=青花瓷", headers={"cookie": "valid"}
+        )
+        assert result.status_code == 200 and len(result.json()["data"]["list"]) == 1
+
+
+def test_bad_online_row_cannot_break_valid_search_results(tmp_path):
+    def official(req):
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {"guid": "a"}
+                if req.url.path.endswith("user/me")
+                else {"list": [], "total": 0},
+            },
+        )
+
+    oc = httpx.AsyncClient(
+        base_url="http://official", transport=httpx.MockTransport(official)
+    )
+    lc = httpx.AsyncClient(
+        base_url="http://lx",
+        transport=httpx.MockTransport(
+            lambda r: httpx.Response(
+                200, json=[RAW, {"source": "kw", "name": "incomplete"}]
+            )
+        ),
+    )
+    app = create_app(
+        Config(data_dir=tmp_path, platforms=["kw"]),
+        oc,
+        lc,
+        httpx.AsyncClient(),
+        worker=False,
+    )
+    with TestClient(app) as c:
+        result = c.get("/music/api/v1/search/track?q=x", headers={"cookie": "valid"})
+        assert result.status_code == 200 and len(result.json()["data"]["list"]) == 1
+
+
+def test_local_search_failure_does_not_hide_online_results(tmp_path):
+    def official(req):
+        return (
+            httpx.Response(200, json={"code": 0, "data": {"guid": "a"}})
+            if req.url.path.endswith("user/me")
+            else httpx.Response(200, json={"code": 123, "data": None})
+        )
+
+    oc = httpx.AsyncClient(
+        base_url="http://official", transport=httpx.MockTransport(official)
+    )
+    lc = httpx.AsyncClient(
+        base_url="http://lx",
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json=[RAW])),
+    )
+    app = create_app(
+        Config(data_dir=tmp_path, platforms=["kw"]),
+        oc,
+        lc,
+        httpx.AsyncClient(),
+        worker=False,
+    )
+    with TestClient(app) as c:
+        response = c.get("/music/api/v1/search/track?q=x", headers={"cookie": "valid"})
+        assert response.status_code == 200 and response.json()["data"]["total"] == 1
+    from fnmusic.logs import read_events
+
+    failures = [r for r in read_events(tmp_path) if r["event"] == "search.local_failed"]
+    assert failures[0]["error"]["official_code"] == 123

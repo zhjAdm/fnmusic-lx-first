@@ -52,6 +52,8 @@ def error_summary(error):
     response = getattr(error, "response", None)
     if response is not None:
         result["http_status"] = response.status_code
+    if type(getattr(error, "official_code", None)) is int:
+        result["official_code"] = error.official_code
     if isinstance(error, ImportError) and error.name:
         result["module"] = str(error.name)[:120]
     result["frames"] = [

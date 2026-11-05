@@ -169,14 +169,47 @@ def create_app(
         key = (user, keyword)
         cached = search_cache.get(key)
         if not cached or cached[0] < time.monotonic():
-            local = await app.state.official.list_all(
-                PREFIX + "search/track", request.headers, keyword=keyword
-            )
+            local_ok, online_ok = True, True
+            try:
+                local = await app.state.official.list_all(
+                    PREFIX + "search/track", request.headers, q=keyword
+                )
+            except (httpx.HTTPError, ValueError) as exc:
+                local_ok = False
+                local = {"list": []}
+                event(
+                    config.data_dir,
+                    "proxy",
+                    "search.local_failed",
+                    level="ERROR",
+                    error=exc,
+                )
             try:
                 raws = await app.state.lx.search(keyword, 1, 100)
-            except (httpx.HTTPError, ValueError, RuntimeError):
+            except (httpx.HTTPError, ValueError, RuntimeError) as exc:
+                online_ok = False
                 raws = []
-            online = [to_official(app.state.store.save_track(raw)) for raw in raws]
+                event(
+                    config.data_dir,
+                    "proxy",
+                    "search.online_failed",
+                    level="ERROR",
+                    error=exc,
+                )
+            if not local_ok and not online_ok:
+                raise ValueError("Both search services unavailable")
+            online = []
+            for raw in raws:
+                try:
+                    online.append(to_official(app.state.store.save_track(raw)))
+                except (ValueError, TypeError, OverflowError) as exc:
+                    event(
+                        config.data_dir,
+                        "proxy",
+                        "search.row_skipped",
+                        level="WARNING",
+                        error=exc,
+                    )
             unique = {row["guid"]: row for row in online + local["list"]}
             cached = (time.monotonic() + 60, list(unique.values()))
             if len(search_cache) >= 100:

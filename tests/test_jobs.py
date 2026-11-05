@@ -42,8 +42,12 @@ class Official:
     async def user(self, headers):
         return "a"
 
+    async def find_duplicate(self, track, headers):
+        return None
+
     async def scan(self, headers):
         self.calls.append("scan")
+        return True
 
     async def find_local(self, track, headers, path=None):
         return {"guid": "local"} if self.ready else None
@@ -204,16 +208,17 @@ async def test_new_download_directory_is_traversable_under_service_umask(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_interrupted_scan_retries_after_worker_restart(tmp_path):
+async def test_interrupted_binding_lookup_retries_after_worker_restart(tmp_path):
     store = Store(tmp_path / "s.db")
     track = store.save_track(RAW)
     store.like("a", track["guid"])
 
     class Interrupted(Official):
-        async def scan(self, headers):
-            self.calls.append("scan")
-            if self.calls.count("scan") == 1:
+        async def find_local(self, track, headers, path=None):
+            self.calls.append("lookup")
+            if self.calls.count("lookup") == 1:
                 raise asyncio.CancelledError()
+            return None
 
     official = Interrupted()
     downloader = Download(tmp_path)
@@ -223,7 +228,7 @@ async def test_interrupted_scan_retries_after_worker_restart(tmp_path):
     store.update_job("a", track["guid"], next_at=0)
     restored = Jobs(store, FakeLX(), downloader, official, Config())
     await restored.run_once("a", {})
-    assert official.calls.count("scan") == 2
+    assert official.calls.count("lookup") == 2
     store.close()
 
 

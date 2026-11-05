@@ -12,6 +12,8 @@ from .config import Config, load_env
 from .control import Settings, ProxyControl
 from .lx import LX
 from .logs import event, collect, format_text
+import asyncio
+from .library import Library
 
 STATIC = Path(__file__).parent / "static"
 BASE = "/app/fnmusic-lx-first"
@@ -26,13 +28,45 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
     settings = Settings(
         config, env_path, control or ProxyControl(config.data_dir), lx, **kwargs
     )
+    library = Library(config)
+    scan_task = None
+
+    def start_scan():
+        nonlocal scan_task
+        if scan_task is None or scan_task.done():
+
+            async def run():
+                try:
+                    await library.scan()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    event(
+                        config.data_dir,
+                        "library",
+                        "scan.failed",
+                        level="ERROR",
+                        error=exc,
+                    )
+
+            scan_task = asyncio.create_task(run())
 
     @asynccontextmanager
     async def lifespan(app):
         event(config.data_dir, "manager", "service.started")
         try:
+            if library.read()["auto_scan"] and library.read()["directories"]:
+                start_scan()
+        except (OSError, ValueError) as exc:
+            event(
+                config.data_dir, "library", "settings.invalid", level="ERROR", error=exc
+            )
+        try:
             yield
         finally:
+            if scan_task:
+                scan_task.cancel()
+                await asyncio.gather(scan_task, return_exceptions=True)
             await settings.close()
             if client:
                 await client.aclose()
@@ -40,6 +74,7 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
+    app.state.library = library
 
     @app.middleware("http")
     async def administrator(request, call_next):
@@ -62,6 +97,9 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
             "/api/settings": "settings.save",
             "/api/takeover": "takeover.change",
             "/api/tools/download": "tools.download",
+            "/api/library": "library.save",
+            "/api/library/scan": "library.scan",
+            "/api/library/cancel": "library.cancel",
         }
         try:
             response = await call_next(request)
@@ -95,7 +133,9 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
     @app.exception_handler(httpx.HTTPError)
     async def upstream_error(request, exc):
         event(config.data_dir, "manager", "upstream.failed", level="ERROR", error=exc)
-        return JSONResponse({"error": "音源服务不可用，请稍后重试"}, status_code=503)
+        return JSONResponse(
+            {"error": "上游服务不可用，请查看运行日志后重试"}, status_code=503
+        )
 
     async def body(request):
         data = bytearray()
@@ -150,6 +190,34 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
     async def download_tools(request: Request):
         await body(request)
         return await settings.download_tools()
+
+    @router.get("/api/library")
+    async def library_state():
+        return JSONResponse(library.state(), headers={"Cache-Control": "no-store"})
+
+    @router.post("/api/library")
+    async def save_library(request: Request):
+        data = await body(request)
+        result = library.save(data.get("directories"), data.get("auto_scan"))
+        return result
+
+    @router.post("/api/library/scan")
+    async def scan_library(request: Request):
+        await body(request)
+        if not library.read()["directories"]:
+            raise ValueError("请先设置本地音乐目录")
+        start_scan()
+        await asyncio.sleep(0)
+        return library.state()
+
+    @router.post("/api/library/cancel")
+    async def cancel_library(request: Request):
+        await body(request)
+        library.cancel()
+        if scan_task and not scan_task.done():
+            scan_task.cancel()
+            await asyncio.gather(scan_task, return_exceptions=True)
+        return library.state()
 
     async def log_result(source, level, limit):
         return await collect(

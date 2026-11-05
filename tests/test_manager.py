@@ -196,3 +196,32 @@ def test_logs_admin_read_filter_export_and_invalid_sources(tmp_path):
         )
         assert c.get("/api/logs?limit=100000", headers=ADMIN).status_code == 422
         assert exported.headers["cache-control"] == "no-store"
+
+
+def test_library_scan_requires_admin_but_no_official_music_session(tmp_path):
+    import time
+    from library_fixtures import song
+
+    app, _ = manager(tmp_path)
+    music = tmp_path / "music"
+    song(music)
+    app.state.library.validator = lambda roots: roots
+    with TestClient(app) as c:
+        assert c.get("/api/library").status_code == 403
+        assert (
+            c.post(
+                "/api/library",
+                json={"directories": [str(music)], "auto_scan": True},
+                headers=ADMIN,
+            ).status_code
+            == 200
+        )
+        assert c.post("/api/library/scan", json={}, headers=ADMIN).status_code == 200
+        for _ in range(100):
+            state = c.get("/api/library", headers=ADMIN).json()
+            if state["scan"]["state"] == "completed":
+                break
+            time.sleep(0.01)
+        assert state["scan"]["state"] == "completed"
+        assert state["scan"]["indexed"] == 1
+        assert c.post("/api/library/cancel", json={}, headers=ADMIN).status_code == 200

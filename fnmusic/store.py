@@ -5,7 +5,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-from .models import track_from_raw
+from .models import track_from_raw, same_recording
 
 
 class Store:
@@ -123,6 +123,16 @@ class Store:
             self.db.execute(
                 "INSERT OR REPLACE INTO file VALUES(?,?,?)", (guid, str(path), quality)
             )
+
+    def recording_file(self, track):
+        for row in self.db.execute(
+            "SELECT file.guid,track.payload FROM file JOIN track USING(guid)"
+        ):
+            if same_recording(track, json.loads(row["payload"])):
+                existing = self.file(row["guid"])
+                if existing:
+                    return existing
+        return None
 
     def close(self):
         self.db.close()

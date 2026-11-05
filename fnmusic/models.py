@@ -21,6 +21,27 @@ def normalize(value):
     return " ".join(unicodedata.normalize("NFKC", str(value or "")).casefold().split())
 
 
+def recording_key(track):
+    return tuple(normalize(track.get(key)) for key in ("title", "artist", "album"))
+
+
+def same_recording(left, right):
+    key = recording_key(left)
+    if (
+        not all(key)
+        or key[0] == normalize("未知歌曲")
+        or key[1] == normalize("未知歌手")
+        or key[2] == normalize("未知专辑")
+        or key != recording_key(right)
+    ):
+        return False
+    try:
+        a, b = int(left.get("duration") or 0), int(right.get("duration") or 0)
+        return a > 0 and b > 0 and abs(a - b) <= 3000
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
 def track_from_raw(raw):
     source = raw.get("source")
     identifier = (
