@@ -225,3 +225,35 @@ async def test_interrupted_scan_retries_after_worker_restart(tmp_path):
     await restored.run_once("a", {})
     assert official.calls.count("scan") == 2
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_missing_probe_waits_without_consuming_attempts_then_resumes(tmp_path):
+    from fnmusic.tools import MissingTool
+
+    store = Store(tmp_path / "s.db")
+    track = store.save_track(RAW)
+    store.like("a", track["guid"])
+
+    class Waiting(Download):
+        missing = True
+
+        async def download(self, track, quality):
+            if self.missing:
+                raise MissingTool("FFmpeg missing")
+            return await super().download(track, quality)
+
+    audio = Waiting(tmp_path)
+    official = Official()
+    official.ready = True
+    jobs = Jobs(store, FakeLX(), audio, official, Config())
+    for _ in range(10):
+        await jobs.run_once("a", {})
+        store.update_job("a", track["guid"], next_at=0)
+    job = store.jobs("a")[0]
+    assert job["state"] == "waiting_tools" and job["attempts"] == 0
+    assert audio.calls == []
+    audio.missing = False
+    await jobs.run_once("a", {})
+    assert store.jobs("a")[0]["state"] == "done"
+    store.close()

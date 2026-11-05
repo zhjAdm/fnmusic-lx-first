@@ -8,11 +8,14 @@ from fastapi import HTTPException
 from starlette.background import BackgroundTask
 from starlette.responses import StreamingResponse
 from .streams import ClosingStream
+from .tools import MediaTools, MissingTool
+from .config import Config
 
 
 class Transcode:
-    def __init__(self, media):
+    def __init__(self, media, config=None):
         self.media = media
+        self.tools = MediaTools(config or Config())
         self.slots = asyncio.Semaphore(2)
         self.cleanups = set()
 
@@ -31,6 +34,10 @@ class Transcode:
             await cleanup()
 
     async def audio(self, track, user, headers):
+        try:
+            executable = await self.tools.require("ffmpeg")
+        except MissingTool as exc:
+            raise HTTPException(503, str(exc)) from None
         try:
             await asyncio.wait_for(self.slots.acquire(), 1)
         except TimeoutError:
@@ -81,7 +88,7 @@ class Transcode:
             ):
                 raise ValueError("No audio input for transcoding")
             process = await asyncio.create_subprocess_exec(
-                "ffmpeg",
+                executable,
                 "-nostdin",
                 "-v",
                 "error",

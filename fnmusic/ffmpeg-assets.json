@@ -1,0 +1,12 @@
+{
+  "x86": {
+    "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-04-12-51/ffmpeg-N-128406-g1fe6854fd9-linux64-lgpl.tar.xz",
+    "sha256": "6df2d71ff89908571ecd74270542203b0d0a08a2e8dce073632478401e8aa645",
+    "size": 140644156
+  },
+  "arm": {
+    "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-04-12-51/ffmpeg-N-128406-g1fe6854fd9-linuxarm64-lgpl.tar.xz",
+    "sha256": "6b1e542f372ae9253e2d9fd594dfa2e99ba1635e8084eccbe0895a1f2e1f4cf3",
+    "size": 121760052
+  }
+}

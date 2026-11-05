@@ -9,4 +9,6 @@
 
 This project is a community extension and is not an official fnOS application.
 
-FPK 0.1.1 additionally bundles Linux CPython from [python-build-standalone](https://github.com/astral-sh/python-build-standalone), official [Node.js](https://nodejs.org), and LGPL-variant [FFmpeg builds](https://github.com/BtbN/FFmpeg-Builds). Original runtime license files are retained. Exact public download URLs and SHA256 values are recorded in `packaging/fpk/assets.lock.json` and the installed payload's `runtime-provenance.json`. The unused Python curses terminfo database is omitted for case-insensitive build-host compatibility.
+FPK 0.1.2 bundles Linux CPython from [python-build-standalone](https://github.com/astral-sh/python-build-standalone) and official [Node.js](https://nodejs.org). Original runtime license files are retained. Exact bundled download URLs and SHA256 values are recorded in `packaging/fpk/assets.lock.json` and the installed payload's `runtime-provenance.json`. The unused Python curses terminfo database is omitted for case-insensitive build-host compatibility.
+
+FFmpeg / ffprobe are not bundled in FPK 0.1.2. Compatible existing tools are reused. On an administrator's request, a fixed LGPL-variant [BtbN FFmpeg build](https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-11-04-12-51) is downloaded into application data with SHA256 and architecture validation. `fnmusic/ffmpeg-assets.json` records its dated URLs and hashes; original license/readme files are retained alongside the installed components. Historical FPK 0.1.1 bundled FFmpeg.

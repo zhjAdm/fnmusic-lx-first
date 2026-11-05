@@ -5,6 +5,7 @@ from collections import defaultdict
 from fastapi import HTTPException
 
 from .official import session_headers
+from .tools import MissingTool
 
 
 class Jobs:
@@ -64,6 +65,15 @@ class Jobs:
                     await self.process(user, guid, headers)
                 except asyncio.CancelledError:
                     raise
+                except MissingTool:
+                    if self.store.is_liked(user, guid):
+                        self.store.update_job(
+                            user,
+                            guid,
+                            state="waiting_tools",
+                            error="缺少 FFmpeg 音频组件，请在扩展管理页面下载",
+                            next_at=time.time() + 30,
+                        )
                 except HTTPException as exc:
                     if not self.store.is_liked(user, guid):
                         continue

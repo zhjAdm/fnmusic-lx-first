@@ -50,7 +50,7 @@ def create_app(
         app.state.official = official
         app.state.lx = lx
         app.state.media = Media(mc, lx, official, store, config)
-        app.state.transcode = Transcode(app.state.media)
+        app.state.transcode = Transcode(app.state.media, config)
         app.state.playlists = Playlists(store, lx, config)
         jobs = Jobs(store, lx, Audio(mc, lx, config), official, config)
         app.state.jobs = jobs

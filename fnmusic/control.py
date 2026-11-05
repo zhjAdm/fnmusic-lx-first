@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import shlex
 import uuid
+from .tools import MediaTools
 
 
 def transaction(method):
@@ -123,9 +124,14 @@ class Settings:
         self.validate_dir = validate_dir
         self.lock = asyncio.Lock()
         self.transactions = set()
+        self.tools = MediaTools(config)
+        self.download_task = None
 
     async def close(self):
         with anyio.CancelScope(shield=True):
+            if self.download_task:
+                self.download_task.cancel()
+                await asyncio.gather(self.download_task, return_exceptions=True)
             if self.transactions:
                 await asyncio.gather(*list(self.transactions), return_exceptions=True)
 
@@ -158,7 +164,7 @@ class Settings:
         except Exception:
             pass
         # Never expose script text, the runtime password, or source service URLs.
-        return {
+        result = {
             k: data[k]
             for k in (
                 "takeover",
@@ -170,6 +176,21 @@ class Settings:
                 "configured",
             )
         }
+        result["audio_tools"] = await self.tools.status()
+        return result
+
+    async def download_tools(self):
+        if not self.download_task or self.download_task.done():
+
+            async def install():
+                try:
+                    await self.tools.install()
+                except Exception:
+                    # Error details remain in component state, without download URLs.
+                    pass
+
+            self.download_task = asyncio.create_task(install())
+        return {"started": True}
 
     @transaction
     async def takeover(self, enabled):

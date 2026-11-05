@@ -8,6 +8,7 @@ import uuid
 import mutagen
 
 from .media import open_media
+from .tools import MediaTools
 
 LOSSLESS = {"flac", "alac", "pcm_s16le", "pcm_s24le", "pcm_s32le", "wavpack", "ape"}
 EXTENSIONS = {
@@ -25,9 +26,9 @@ EXTENSIONS = {
 }
 
 
-async def probe_audio(path, expected_ms=0, quality=""):
+async def probe_audio(path, expected_ms=0, quality="", executable="ffprobe"):
     process = await asyncio.create_subprocess_exec(
-        "ffprobe",
+        executable,
         "-v",
         "error",
         "-show_streams",
@@ -92,8 +93,10 @@ def tag_audio(path, track):
 class Audio:
     def __init__(self, client, lx, config):
         self.client, self.lx, self.config = client, lx, config
+        self.tools = MediaTools(config)
 
     async def download(self, track, quality):
+        probe = await self.tools.require("ffprobe")
         target = await self.lx.resolve(track["raw"], quality)
         missing = []
         directory = self.config.download_dir
@@ -127,7 +130,9 @@ class Audio:
                 os.fsync(output.fileno())
             if not count or (expected and expected != count):
                 raise ValueError("Incomplete audio body")
-            extension = await probe_audio(temporary, track.get("duration", 0), quality)
+            extension = await probe_audio(
+                temporary, track.get("duration", 0), quality, probe
+            )
             await asyncio.to_thread(tag_audio, temporary, track)
             os.chmod(
                 temporary, 0o644

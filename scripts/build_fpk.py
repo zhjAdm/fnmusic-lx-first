@@ -15,7 +15,7 @@ import zlib
 from scripts.runtime import expose_capabilities, native, SHA256 as LX_SHA
 
 ROOT = Path(__file__).resolve().parent.parent
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 
 
 def icon(path, size):
@@ -58,6 +58,8 @@ def icon(path, size):
 def skeleton(stage, arch):
     stage = Path(stage)
     stage.mkdir(parents=True, exist_ok=True)
+    # --repack must also purge the previous full package's bundled binaries.
+    shutil.rmtree(stage / "app/runtime/ffmpeg", ignore_errors=True)
     template = ROOT / "packaging/fpk"
     for name in ("cmd", "config", "wizard", "app"):
         shutil.copytree(template / name, stage / name, dirs_exist_ok=True)
@@ -120,14 +122,6 @@ def install_runtimes(stage, arch, assets, cache):
         (runtime / "node/bin").mkdir(parents=True)
         shutil.copy2(binary, runtime / "node/bin/node")
         shutil.copy2(binary.parent.parent / "LICENSE", runtime / "node/LICENSE")
-        untar(verified_file(cache, assets["ffmpeg"]), tmp / "ffmpeg")
-        binary = next((tmp / "ffmpeg").rglob("bin/ffmpeg"))
-        (runtime / "ffmpeg/bin").mkdir(parents=True)
-        for name in ("ffmpeg", "ffprobe"):
-            shutil.copy2(binary.parent / name, runtime / "ffmpeg/bin" / name)
-        for item in binary.parent.parent.iterdir():
-            if item.is_file():
-                shutil.copy2(item, runtime / "ffmpeg" / item.name)
     lxzip = cache / "lx-music-sync-server-v2.1.2-server.zip"
     if hashlib.sha256(lxzip.read_bytes()).hexdigest() != LX_SHA:
         raise RuntimeError("LX runtime checksum mismatch")
@@ -150,7 +144,9 @@ def install_runtimes(stage, arch, assets, cache):
         "linux-" + ("x64" if arch == "x86" else "arm64") + "-gnu",
     )
     # Record exact public provenance inside the package; no configuration is embedded.
-    (stage / "app/runtime-provenance.json").write_text(json.dumps(assets, indent=2))
+    (stage / "app/runtime-provenance.json").write_text(
+        json.dumps({k: v for k, v in assets.items() if k != "ffmpeg"}, indent=2)
+    )
 
 
 def install_wheels(stage, arch, wheels):
@@ -189,6 +185,9 @@ def build(arch, work, out, fnpack, repack=False):
         install_wheels(
             stage, arch, work / "wheels" / ("x86_64" if arch == "x86" else "aarch64")
         )
+    (stage / "app/runtime-provenance.json").write_text(
+        json.dumps({k: v for k, v in assets.items() if k != "ffmpeg"}, indent=2)
+    )
     # Check that no private source or local state entered the payload.
     if list(stage.rglob("*music-source-paid*")) or list(stage.rglob(".env")):
         raise RuntimeError("Private input in FPK stage")

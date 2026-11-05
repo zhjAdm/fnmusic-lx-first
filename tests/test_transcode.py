@@ -86,6 +86,13 @@ async def test_cancelled_close_still_releases_process_and_slot(monkeypatch):
             return ClosingStream(body(), close=source_close)
 
     transcode = Transcode(Media())
+
+    # This test replaces subprocesses to exercise cancellation. Tool discovery
+    # is independently covered with real audio smoke checks and candidate tests.
+    async def executable(name):
+        return name
+
+    monkeypatch.setattr(transcode.tools, "require", executable)
     response = await transcode.audio({"guid": "a" * 32}, "user", {})
     await asyncio.sleep(0)
     with anyio.CancelScope() as scope:

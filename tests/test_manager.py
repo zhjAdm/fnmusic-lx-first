@@ -141,3 +141,24 @@ def test_download_directory_cannot_be_application_data(tmp_path):
             headers=ADMIN,
         )
         assert response.status_code == 422
+
+
+def test_optional_component_download_requires_admin_and_is_not_automatic(
+    tmp_path, monkeypatch
+):
+    app, _ = manager(tmp_path)
+    from fnmusic.tools import MediaTools
+
+    calls = []
+
+    async def install(self):
+        calls.append(True)
+
+    monkeypatch.setattr(MediaTools, "install", install)
+    with TestClient(app) as c:
+        assert c.post("/api/tools/download", json={}).status_code == 403
+        state = c.get("/api/state", headers=ADMIN).json()
+        assert "audio_tools" in state
+        assert calls == []
+        assert c.post("/api/tools/download", json={}, headers=ADMIN).status_code == 200
+    assert calls == [True]

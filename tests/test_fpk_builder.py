@@ -15,3 +15,13 @@ def test_fpk_skeleton_and_no_private_inputs(tmp_path):
     assert not list(stage.rglob("*music-source-paid*"))
     assert not list(stage.rglob(".env"))
     assert (stage / "cmd/main").stat().st_mode & 0o111
+
+
+def test_repack_skeleton_removes_previously_bundled_ffmpeg(tmp_path):
+    stage = tmp_path / "stage"
+    old = stage / "app/runtime/ffmpeg/bin"
+    old.mkdir(parents=True)
+    (old / "ffmpeg").write_text("old bundled executable")
+    skeleton(stage, "x86")
+    assert not (stage / "app/runtime/ffmpeg").exists()
+    assert (stage / "app/code/fnmusic/ffmpeg-assets.json").is_file()

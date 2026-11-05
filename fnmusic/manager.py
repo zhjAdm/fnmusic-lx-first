@@ -114,6 +114,11 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
         data = await body(request)
         return await settings.takeover(data.get("enabled"))
 
+    @router.post("/api/tools/download")
+    async def download_tools(request: Request):
+        await body(request)
+        return await settings.download_tools()
+
     app.include_router(router)
     app.include_router(router, prefix=BASE)
     return app

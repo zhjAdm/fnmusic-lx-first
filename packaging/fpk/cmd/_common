@@ -13,7 +13,7 @@ done
 APP_STATE="${TRIM_PKGVAR:-${APP_BASE}/var}"
 export PYTHONPATH="${APP_ROOT}/site:${APP_ROOT}/code"
 export PYTHONDONTWRITEBYTECODE=1
-export PATH="${APP_ROOT}/runtime/node/bin:${APP_ROOT}/runtime/ffmpeg/bin:${APP_ROOT}/runtime/python/bin:${PATH}"
+export PATH="${APP_ROOT}/runtime/node/bin:${APP_ROOT}/runtime/python/bin:${PATH}"
 run_lifecycle() {
     "${APP_ROOT}/runtime/python/bin/python3" -m scripts.fpk_lifecycle "$1" --root "${APP_ROOT}" --state "${APP_STATE}"
 }
