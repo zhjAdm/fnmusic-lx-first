@@ -1,10 +1,10 @@
 # 飞牛音乐 LX 扩展
 
-保留官方飞牛音乐 Web / App，接入用户自有的 LX 自定义音源。当前为 **0.1.6 开发版**，已完成本机自动化验证，尚未在真实 fnOS 和官方手机 App 上验收。
+保留官方飞牛音乐 Web / App，接入用户自有的 LX 自定义音源。当前为 **0.1.8 开发版**，已完成本机自动化验证，尚未在真实 fnOS 和官方手机 App 上验收。
 
 ## 推荐：直接安装 FPK
 
-从 `dist/` 选择 `fnmusic-lx-first-0.1.6-x86.fpk`（Intel/AMD）或 `fnmusic-lx-first-0.1.6-arm.fpk`（ARM64），在飞牛应用中心手动安装。软件包自带 Linux Python、Node 和 LX 服务；FFmpeg / ffprobe 优先复用 NAS 已有兼容版本，缺少时由管理员在管理页按需下载，不需要手动部署源码或在 NAS 上安装 Python 依赖。安装和普通播放不会自动下载音频组件。需已安装官方飞牛音乐。
+从 `dist/` 选择 `fnmusic-lx-first-0.1.8-x86.fpk`（Intel/AMD）或 `fnmusic-lx-first-0.1.8-arm.fpk`（ARM64），在飞牛应用中心手动安装。软件包自带 Linux Python、Node 和 LX 服务；FFmpeg / ffprobe 优先复用 NAS 已有兼容版本，缺少时由管理员在管理页按需下载，不需要手动部署源码或在 NAS 上安装 Python 依赖。安装和普通播放不会自动下载音频组件。需已安装官方飞牛音乐。
 
 安装后打开桌面「fnMusic 扩展管理」：
 
@@ -191,3 +191,7 @@ PRIVATE_LX_SCRIPT='/你的路径/音源.js' .venv/bin/python -m pytest tests/tes
 0.1.8：音频请求被拒绝时，日志保留实际HTTP状态码及固定原因，最终播放502保留最近一次失败的安全原因。此改动用于定位音源地址访问失败，不代表已修复真实音源或官方HLS超时。
 
 0.1.8：默认音源平台顺序改为kg（酷狗）、tx（QQ音乐）、kw（酷我）、wy（网易云）、mg（咪咕），热门推荐默认kg。升级只迁移旧版完整默认顺序，保留手工定制的平台列表及指定榜单。优先级作用于搜索结果顺序；播放/喜欢下载仍使用所选条目的平台，不将已有kw条目自动替换成kg/tx，也不宣称已实现播放时跨平台自动匹配。
+
+## GitHub手动构建
+
+已提供只由Actions中Run workflow手动触发的双架构FPK构建流程，普通推送不打包。构建前执行测试，产物仅包含FPK和SHA256，不需要私有音源或密钥。详见[GitHub构建说明](docs/github-build.md)。
