@@ -46,4 +46,6 @@ python -m scripts.verify_fpk dist/*.fpk
 
 源码仓库已按用户要求公开：https://github.com/zhjAdm/fnmusic-lx-first 。安装包入口是[Releases](https://github.com/zhjAdm/fnmusic-lx-first/releases)，Tags展示关联的源码版本标签；FPK位于Release的Assets中。公开Release可供NAS匿名检查下载，不需要将个人GitHub凭据存进软件。
 
-0.1.9源码增加管理页软件更新入口；下载并校验后仍由用户到应用中心手动升级。本次仅发布已有0.1.8，0.1.9等待用户明确打包或手动触发构建。
+0.1.9源码增加管理页软件更新入口；下载并校验后仍由用户到应用中心手动升级。0.1.9已由用户手动构建并发布，安装后可使用软件内更新入口。
+
+工作流依赖的官方Actions已升级到使用Node24的稳定版本，并固定提交SHA。`setup-node`中的`node-version: 22`是LX测试所用运行时；安装包Node版本由assets.lock.json固定，与Actions宿主的Node24是不同层级。普通推送仍不会触发打包。

@@ -1,10 +1,10 @@
 # 飞牛音乐 LX 扩展
 
-保留官方飞牛音乐 Web / App，接入用户自有的 LX 自定义音源。当前已发布 **0.1.8 开发版**（main 分支包含待打包的 0.1.9 更新），已完成本机自动化验证，尚未在真实 fnOS 和官方手机 App 上验收。
+保留官方飞牛音乐 Web / App，接入用户自有的 LX 自定义音源。当前已发布 **0.1.9 开发版**，已完成本机自动化验证，尚未在真实 fnOS 和官方手机 App 上验收。
 
 ## 推荐：直接安装 FPK
 
-从 `dist/` 选择 `fnmusic-lx-first-0.1.8-x86.fpk`（Intel/AMD）或 `fnmusic-lx-first-0.1.8-arm.fpk`（ARM64），在飞牛应用中心手动安装。软件包自带 Linux Python、Node 和 LX 服务；FFmpeg / ffprobe 优先复用 NAS 已有兼容版本，缺少时由管理员在管理页按需下载，不需要手动部署源码或在 NAS 上安装 Python 依赖。安装和普通播放不会自动下载音频组件。需已安装官方飞牛音乐。
+从 `dist/` 选择 `fnmusic-lx-first-0.1.9-x86.fpk`（Intel/AMD）或 `fnmusic-lx-first-0.1.9-arm.fpk`（ARM64），在飞牛应用中心手动安装。软件包自带 Linux Python、Node 和 LX 服务；FFmpeg / ffprobe 优先复用 NAS 已有兼容版本，缺少时由管理员在管理页按需下载，不需要手动部署源码或在 NAS 上安装 Python 依赖。安装和普通播放不会自动下载音频组件。需已安装官方飞牛音乐。
 
 安装后打开桌面「fnMusic 扩展管理」：
 
@@ -198,8 +198,8 @@ PRIVATE_LX_SCRIPT='/你的路径/音源.js' .venv/bin/python -m pytest tests/tes
 
 代码仓库：[zhjAdm/fnmusic-lx-first](https://github.com/zhjAdm/fnmusic-lx-first)（公开）。进入[GitHub Actions](https://github.com/zhjAdm/fnmusic-lx-first/actions/workflows/build-fpk.yml)手动构建，首次云端构建已通过。
 
-## 软件更新（0.1.9源码，尚未打包）
+## 软件更新（0.1.9起）
 
-在管理页「软件更新」点击检查更新，读取公开GitHub Releases。发现新版本后，可下载匹配架构的安装包；后台完成SHA256校验后，点击保存安装包，再到飞牛应用中心手动安装/升级。不自动安装或重启，不需要GitHub Token；检查更新不会下载音频或音源脚本。安装包只缓存一份在扩展私有数据目录。当前0.1.8仍需从Releases手动下载，软件内入口需安装0.1.9后使用。
+在管理页「软件更新」点击检查更新，读取公开GitHub Releases。发现新版本后，可下载匹配架构的安装包；后台完成SHA256校验后，点击保存安装包，再到飞牛应用中心手动安装/升级。不自动安装或重启，不需要GitHub Token；检查更新不会下载音频或音源脚本。安装包只缓存一份在扩展私有数据目录。0.1.8及更早版本需先从Releases手动升级到0.1.9，之后才能使用软件内入口。
 
 安装包已发布到[Releases](https://github.com/zhjAdm/fnmusic-lx-first/releases/latest)，选择对应架构的 `.fpk`；关联的版本标签会出现在Tags中。源码仓库已公开，下载不需要登录GitHub。
