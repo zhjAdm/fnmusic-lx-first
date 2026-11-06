@@ -26,7 +26,12 @@ def package(*, appname='fnmusic-lx-first', version='0.1.13', arch='arm', checksu
 def upgrade(tmp_path):
     from fnmusic.self_upgrade import SelfUpgrade
 
-    worker = SelfUpgrade(Config(data_dir=tmp_path), current='0.1.12', arch='arm')
+    root = tmp_path / 'installed'
+    python = root / 'runtime/python/bin/python3'
+    python.parent.mkdir(parents=True, exist_ok=True)
+    python.write_text(f'#!/bin/bash\nexec {sys.executable!r} "$@"\n')
+    python.chmod(0o700)
+    worker = SelfUpgrade(Config(data_dir=tmp_path, install_root=root), current='0.1.12', arch='arm')
     worker.supported = True
     return worker
 
@@ -40,7 +45,9 @@ def test_upgrade_stages_private_copy_and_checks_package_identity(tmp_path):
     assert job.stat().st_mode & 0o777 == 0o700
     assert (job / 'package.fpk').stat().st_mode & 0o777 == 0o600
     assert worker.state()['state'] == 'preparing'
-    assert 'install-fpk' in (job / 'run.sh').read_text()
+    assert 'install-fpk' not in (job / 'run.sh').read_text()
+    assert (job / 'worker.py').is_file()
+    assert (job / 'python/bin/python3').is_file()
 
 
 @pytest.mark.parametrize('changes', [
@@ -82,7 +89,7 @@ async def test_upgrade_handoff_uses_separate_systemd_unit_and_survives_manager_r
     await worker.launch(job)
     args, kwargs = calls[0]
     assert args[0].endswith('systemd-run')
-    assert '--property=RuntimeMaxSec=900' in args
+    assert '--property=RuntimeMaxSec=1500' in args
     assert '--property=WorkingDirectory=/' in args
     assert '--property=StandardOutput=null' in args
     assert args[-2:] == ('/bin/bash', str(job / 'run.sh'))
@@ -125,7 +132,8 @@ async def test_only_explicit_upgrade_request_installs_after_verified_download(tm
             return httpx.Response(200, text=hashlib.sha256(data).hexdigest() + '  ' + name)
         return httpx.Response(200, content=data)
     async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as client:
-        updater = Updater(Config(data_dir=tmp_path), client=client, arch='arm', current='0.1.12')
+        worker = upgrade(tmp_path)
+        updater = Updater(Config(data_dir=tmp_path, install_root=worker.install_root), client=client, arch='arm', current='0.1.12')
         updater.installer.supported = True
         updater.latest = {'version': '0.1.13', 'tag': 'v0.1.13', 'filename': name}
         launched = []
@@ -147,23 +155,13 @@ async def test_only_explicit_upgrade_request_installs_after_verified_download(tm
 
 @pytest.mark.parametrize('code', [0, 17])
 def test_shell_runner_invokes_only_fixed_install_command_and_records_result(tmp_path, monkeypatch, code):
-    import fnmusic.self_upgrade as module
-
-    installer = tmp_path / 'fake installer'
-    installer.write_text(f'#!/bin/bash\nprintf "%s\\n" "$@" > {str(tmp_path / "arguments")!r}\nexit {code}\n')
-    installer.chmod(0o700)
-    hasher = tmp_path / 'sha256sum'
-    hasher.write_text(f'#!{sys.executable}\nimport sys,hashlib\nprint(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()+"  -")\n')
-    hasher.chmod(0o700)
-    monkeypatch.setattr(module, 'INSTALLER', str(installer))
-    monkeypatch.setattr(module, 'SHA256SUM', str(hasher))
     worker = upgrade(tmp_path)
     data = package()
     worker.begin('0.1.13')
     job = worker.prepare(io.BytesIO(data), hashlib.sha256(data).hexdigest())
+    (job / 'worker.py').write_text('from pathlib import Path\nimport sys\nPath(__file__).with_name("status").write_text("verifying\\n")\nsys.exit(' + str(code) + ')\n')
     result = subprocess.run(['/bin/bash', str(job / 'run.sh')], capture_output=True)
     assert result.returncode == code
-    assert (tmp_path / 'arguments').read_text().splitlines() == ['install-fpk', str(job / 'package.fpk')]
     assert worker.state()['state'] == ('verifying' if code == 0 else 'error')
     if code:
         assert worker.state()['code'] == code
@@ -179,3 +177,14 @@ def test_upgrade_deadline_and_interrupted_preparation_never_report_success(tmp_p
     assert worker.state()['state'] == 'error'
     worker.current = '0.1.13'
     assert worker.state()['state'] == 'done'
+
+
+def test_expired_submitted_task_is_unknown_and_cannot_be_retried(tmp_path, monkeypatch):
+    worker = upgrade(tmp_path)
+    worker.begin('0.1.13')
+    (worker.job / 'status').write_text('installing\n')
+    (worker.job / 'submitted').write_text('1\n')
+    monkeypatch.setattr('fnmusic.self_upgrade.time.time', lambda: 10**12)
+    assert worker.state()['state'] == 'unknown'
+    with pytest.raises(ValueError, match='升级正在进行'):
+        worker.begin('0.1.14')

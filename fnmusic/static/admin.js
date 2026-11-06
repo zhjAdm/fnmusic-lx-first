@@ -47,7 +47,7 @@ let updateState={};let updateDirty=false;let upgradeWaiting=false;let upgradeRel
 function renderUpdate(state){
 updateState=state;
 const download=state.download||{};const upgrade=state.upgrade||{};
-const upgrading=['downloading','preparing','queued','installing','verifying'].includes(upgrade.state);
+const upgrading=['downloading','preparing','queued','installing','verifying','unknown'].includes(upgrade.state);
 const downloading=download.state==='downloading';const working=downloading||upgrading;
 if(upgrading)upgradeWaiting=true;
 if(!updateDirty)$('update-directory').value=state.download_dir||'';
@@ -62,7 +62,7 @@ $('update-install').disabled=busy||working||!state.available||!upgrade.supported
 $('update-file').hidden=download.state!=='ready';$('update-file').href=new URL('api/update/file',base).href;$('update-release-link').href=state.latest?.url||state.release_url||'https://github.com/zhjAdm/fnmusic-lx-first/releases';
 $('update-progress').hidden=!downloading;if(download.total)$('update-progress').value=Math.min(100,(download.received||0)*100/download.total);else $('update-progress').removeAttribute('value');
 $('update-note').textContent=downloading?`已下载 ${((download.received||0)/1048576).toFixed(1)} MB`+(download.total?` / ${(download.total/1048576).toFixed(1)} MB`:'')+' · 完成后自动校验 SHA256':download.state==='ready'?`v${download.version} 安装包已通过 SHA256 校验。`:download.error||'仅下载不会安装；点击下载并升级后会自动执行升级。';
-const labels={downloading:'正在下载升级包，完成后自动校验。',preparing:'正在核对升级包并准备安装副本…',queued:'已提交独立升级任务，正在等待应用中心处理…',installing:'飞牛应用中心正在升级，扩展可能短暂断开，请等待重新连接。',verifying:'安装命令已完成，正在等待新版管理服务启动…',done:`升级完成，当前运行版本 v${state.current}。`};
+const labels={downloading:'正在下载升级包，完成后自动校验。',preparing:'正在核对升级包并准备安装副本…',queued:'已提交独立升级任务，正在等待应用中心处理…',installing:'飞牛应用中心正在升级，扩展可能短暂断开，请等待重新连接。',verifying:'应用中心升级任务已结束，正在核对新版管理服务…',done:`升级完成，当前运行版本 v${state.current}。`};
 $('upgrade-note').textContent=labels[upgrade.state]||upgrade.error||(upgrade.supported?'下载并升级会校验安装包，再交由飞牛应用中心覆盖升级；期间扩展会短暂重启，请保持此页打开。':'当前环境不支持软件内升级，可下载后在飞牛应用中心手动安装。');
 if(upgrade.state==='done'){
 upgradeWaiting=false;const pageVersion=$('app-version').dataset.pageVersion;

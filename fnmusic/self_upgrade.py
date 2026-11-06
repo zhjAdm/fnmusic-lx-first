@@ -8,28 +8,32 @@ from pathlib import Path
 import platform
 import re
 import shlex
+import shutil
 import subprocess
 import tarfile
 import time
 import uuid
 
 from .control import atomic_text
+from .upgrade_worker import DAEMON_SOCKET
 
-INSTALLER = '/usr/local/bin/appcenter-cli'
 SYSTEMD_RUN = '/usr/bin/systemd-run'
-SHA256SUM = '/usr/bin/sha256sum'
 MAX_PACKAGE = 256 * 1024 * 1024
-ACTIVE = {'downloading', 'preparing', 'queued', 'installing', 'verifying'}
+ACTIVE = {'downloading', 'preparing', 'queued', 'installing', 'verifying', 'unknown'}
 
 
 class SelfUpgrade:
     def __init__(self, config, *, current, arch):
         self.folder = config.data_dir.resolve() / 'self-update'
+        self.install_root = config.install_root.resolve() if config.install_root else None
+        self.data_dir = config.data_dir.resolve()
         self.current, self.arch = current, arch
         self.running = False
         self.supported = bool(
-            config.install_root and platform.system() == 'Linux' and os.geteuid() == 0
-            and all(os.access(path, os.X_OK) for path in (INSTALLER, SYSTEMD_RUN, '/bin/bash', SHA256SUM))
+            self.install_root and platform.system() == 'Linux' and os.geteuid() == 0
+            and Path(DAEMON_SOCKET).is_socket()
+            and all(os.access(path, os.X_OK) for path in (SYSTEMD_RUN, '/bin/bash', self.install_root / 'runtime/python/bin/python3'))
+            and self.volume(self.install_root) and self.volume(self.data_dir)
         )
 
     def state(self):
@@ -41,15 +45,34 @@ class SelfUpgrade:
             phase = (self.folder / data['job'] / 'status').read_text().strip()
             if phase not in ACTIVE | {'error'}:
                 raise ValueError('Invalid phase')
+            if (phase in {'queued', 'installing', 'verifying'}
+                    and time.time() - data.get('submitted', data['started']) > 1800
+                    and (self.folder / data['job'] / 'submitted').exists()):
+                phase = 'unknown'
             result.update(state=phase, version=data['version'], started=data['started'])
-            if phase != 'error' and self.current == data['version']:
+            from .updates import version
+            if phase in {'verifying', 'unknown'} and version(self.current) >= version(data['version']):
                 result['state'] = 'done'
             elif phase in {'queued', 'installing', 'verifying'} and time.time() - data.get('submitted', data['started']) > 1800:
                 result.update(state='error', error='升级等待超时，请在飞牛应用中心检查应用状态')
             elif phase in {'downloading', 'preparing'} and not self.running:
                 result.update(state='error', error='升级准备被中断，请重新下载或手动升级')
-            elif phase == 'error':
-                result['error'] = '升级未完成，请查看运行日志并在飞牛应用中心检查应用状态'
+            elif phase in {'error', 'unknown'}:
+                messages = {
+                    'version_not_updated': '应用中心任务已结束，但磁盘版本未更新，请使用应用中心手动升级',
+                    'daemon_rejected': '应用中心拒绝升级，请检查返回代码并使用应用中心手动升级',
+                    'volume_unverified': '无法确认原安装卷和数据卷，已停止升级，请使用应用中心手动升级',
+                    'daemon_unavailable': '无法连接应用中心升级接口，请使用应用中心手动升级',
+                }
+                reason_path = self.folder / data['job'] / 'reason'
+                reason = reason_path.read_text().strip() if reason_path.exists() else ''
+                result['error'] = (messages.get(reason, '升级未完成，请在飞牛应用中心检查应用状态') if phase == 'error'
+                                   else '升级任务结果暂时无法确认，请在飞牛应用中心检查；不会自动重复提交')
+                daemon_code = self.folder / data['job'] / 'daemon-code'
+                if daemon_code.exists() and re.fullmatch('[0-9]{1,10}', daemon_code.read_text().strip()):
+                    result['daemon_code'] = int(daemon_code.read_text().strip())
+                    if result['daemon_code']:
+                        result['error'] += f'（应用中心代码 {result["daemon_code"]}）'
                 code_path = self.folder / data['job'] / 'exit-code'
                 if code_path.is_file():
                     code = code_path.read_text().strip()
@@ -61,6 +84,13 @@ class SelfUpgrade:
         except (OSError, ValueError, KeyError, TypeError):
             result.update(state='error', error='无法读取升级状态，请在飞牛应用中心检查应用状态')
         return result
+
+    @staticmethod
+    def volume(path):
+        if path is None or len(path.parts) < 2:
+            return None
+        match = re.fullmatch(r'vol([1-9][0-9]*)', path.parts[1])
+        return int(match[1]) if match else None
 
     def begin(self, target):
         from .updates import version
@@ -105,8 +135,22 @@ class SelfUpgrade:
         if not count or not re.fullmatch('[a-f0-9]{64}', expected) or sha.hexdigest() != expected:
             raise ValueError('安装包文件已变化，请重新下载')
         self.validate_package(path)
-        atomic_text(self.job / 'run.sh', self.script(expected))
+        self.snapshot_runtime()
+        atomic_text(self.job / 'request.json', json.dumps({
+            'version': self.target, 'sha256': expected,
+            'installed_file': str(self.install_root / 'code/fnmusic/__init__.py'),
+            'install_volume': self.volume(self.install_root), 'data_volume': self.volume(self.data_dir),
+        }) + '\n')
+        atomic_text(self.job / 'run.sh', self.script())
         return self.job
+
+    def snapshot_runtime(self):
+        source = self.install_root / 'runtime/python'
+        for path in source.rglob('*'):
+            if path.is_symlink() and not path.resolve().is_relative_to(source.resolve()):
+                raise ValueError('升级运行环境包含外部链接，请使用应用中心手动升级')
+        shutil.copytree(source, self.job / 'python', symlinks=True, ignore=shutil.ignore_patterns('__pycache__'))
+        atomic_text(self.job / 'worker.py', Path(__file__).with_name('upgrade_worker.py').read_text())
 
     def validate_package(self, path):
         fields, payload, size, seen = {}, None, 0, set()
@@ -145,7 +189,7 @@ class SelfUpgrade:
         except (tarfile.TarError, UnicodeError, OSError) as exc:
             raise ValueError('安装包格式无效') from exc
 
-    def script(self, expected):
+    def script(self):
         # Only fixed executable paths and shell-quoted, private paths are used.
         job = shlex.quote(str(self.job))
         return f'''#!/bin/bash
@@ -153,14 +197,20 @@ set -euo pipefail
 umask 077
 cd -- {job}
 status() {{ printf '%s\\n' "$1" > status.next; mv -f -- status.next status; }}
-failed() {{ code=$?; printf '%s\\n' "$code" > exit-code; status error; }}
+failed() {{
+    code=$?; printf '%s\\n' "$code" > exit-code
+    phase=$(cat status)
+    if [[ "$phase" != error && "$phase" != unknown ]]; then
+        if [[ -f submitted ]]; then
+            printf '%s\\n' worker_interrupted > reason; status unknown
+        else
+            printf '%s\\n' worker_launch_failed > reason; status error
+        fi
+    fi
+}}
 trap failed EXIT
 trap 'exit 143' TERM INT
-status installing
-actual=$({shlex.quote(SHA256SUM)} < package.fpk)
-[[ "${{actual%% *}}" == {shlex.quote(expected)} ]]
-{shlex.quote(INSTALLER)} install-fpk {shlex.quote(str(self.job / 'package.fpk'))} >/dev/null 2>&1
-status verifying
+{shlex.quote(str(self.job / 'python/bin/python3'))} -I -S -B {shlex.quote(str(self.job / 'worker.py'))}
 trap - EXIT
 '''
 
@@ -173,7 +223,7 @@ trap - EXIT
         try:
             process = await asyncio.create_subprocess_exec(
                 SYSTEMD_RUN, '--quiet', '--collect', '--unit=fnmusic-lx-update-' + job.name,
-                '--property=RuntimeMaxSec=900', '--property=TimeoutStopSec=30',
+                '--property=RuntimeMaxSec=1500', '--property=TimeoutStopSec=30',
                 '--property=WorkingDirectory=/', '--property=UMask=0077',
                 '--property=StandardOutput=null', '--property=StandardError=null',
                 '/bin/bash', str(job / 'run.sh'),

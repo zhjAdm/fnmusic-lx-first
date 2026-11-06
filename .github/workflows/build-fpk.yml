@@ -98,7 +98,7 @@ jobs:
           python3 -m scripts.verify_fpk dist/*.fpk
           cat > release-notes.md <<'NOTES'
           在飞牛应用中心手动安装/升级：Intel/AMD选择x86，ARM64选择arm；无需卸载。
-          配套SHA256文件用于校验。管理页支持检查新版本并下载、校验匹配架构的安装包，仍需到应用中心手动安装。
+          配套SHA256文件用于校验。管理页支持检查新版本、仅下载或下载并升级；自动升级需要可用的本地应用中心升级接口，不支持时请手动安装。
           这是开发版；真实音源播放失败、官方HLS超时等问题请结合运行日志继续确认。软件包不含付费音源或密钥。
           NOTES
           printf '\n来源构建：%s/%s/actions/runs/%s\n源码提交：%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$GITHUB_SHA" >> release-notes.md

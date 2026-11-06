@@ -1,6 +1,6 @@
 # 软件内升级接入设计
 
-用户已同意研究并接入下载后升级，目标设备为 fnOS 1.2.1。实现版本 0.1.12；本文不是功能已完成或实机已验证的声明。
+用户已同意研究并接入下载后升级，目标设备为 fnOS 1.2.1。修复版本 0.1.14；旧版命令行安装方案已被设备证据否定，新接口仍需实机完整验收。
 
 ## 已确认的现状
 
@@ -39,6 +39,14 @@ appcenter-cli --help
 - 管理服务停止后独立任务仍继续；升级后保留设置和接管偏好，读取实际版本后才宣告成功。
 - 在目标 fnOS 1.2.1 验证完整覆盖升级。模拟测试只能证明任务编排逻辑，不能替代该验收。
 
-## 2026-11-06 设备帮助证据与实现
+## 2026-11-06 设备帮助证据与原实现
 
-用户在 fnOS 1.2.1 root 终端确认 appcenter-cli 0.0.1，install-fpk/ install / install-local 的 --volume 帮助均注明 ignored during upgrades，证明 CLI 命令设计涵盖升级场景。采用固定 appcenter-cli install-fpk 私有包路径；通过独立 systemd 单元运行私有 Bash 脚本，禁止把系统权限不足误判为命令不存在。新增入口保留仅下载选项，真实安装验收待在 NAS 完成。
+用户在 fnOS 1.2.1 root 终端确认 appcenter-cli 0.0.1，install-fpk/ install / install-local 的 --volume 帮助均注明 ignored during upgrades，当时据此推断 CLI 可覆盖升级，但未完成实机验证；后续结果已否定该推断。原实现采用固定 appcenter-cli install-fpk 私有包路径；通过独立 systemd 单元运行私有 Bash 脚本，禁止把系统权限不足误判为命令不存在。新增入口保留仅下载选项，真实安装验收待在 NAS 完成。
+
+## 后续实机结果及0.1.14修正
+
+上述帮助文字不能证明 install-fpk 支持覆盖升级。用户两次重放实际安装包均返回0和已安装提示，磁盘及运行版本仍为0.1.12，故原路径被否定。页面停在verifying来自误把退出码0当作升级完成。
+
+用户确认本地Unix Socket `/var/run/com.trim.app.center.sock` 的升级前检查接口返回10030参数校验错误。修复采用独立Python标准库worker调用守护进程的暂存、升级前检查、升级提交和状态轮询接口，校验业务code而不是进程退出码。worker连同一份私有Python运行环境提前复制，避免旧安装目录被替换时丢失解释器。
+
+保留旧应用所在的安装卷和数据卷，仅提交update/task，完全不走卸载重装。任务返回成功后检查磁盘版本，再等待新管理服务实际版本；不可观测的提交结果保持unknown，不重试变更。字段及接口事实的参考和验收记录见 superpowers/plans/2026-11-06-daemon-upgrade-fix.md。
