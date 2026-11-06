@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fnmusic-lx-first"
-version = "0.1.10"
+version = "0.1.11"
 description = "LX-first online extension for the official fnOS music application"
 readme = "README.md"
 license = "MIT"
