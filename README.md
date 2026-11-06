@@ -195,3 +195,5 @@ PRIVATE_LX_SCRIPT='/你的路径/音源.js' .venv/bin/python -m pytest tests/tes
 ## GitHub手动构建
 
 已提供只由Actions中Run workflow手动触发的双架构FPK构建流程，普通推送不打包。构建前执行测试，产物仅包含FPK和SHA256，不需要私有音源或密钥。详见[GitHub构建说明](docs/github-build.md)。
+
+代码仓库：[zhjAdm/fnmusic-lx-first](https://github.com/zhjAdm/fnmusic-lx-first)（私有）。进入[GitHub Actions](https://github.com/zhjAdm/fnmusic-lx-first/actions/workflows/build-fpk.yml)手动构建，首次云端构建已通过。

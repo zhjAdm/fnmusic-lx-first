@@ -13,3 +13,5 @@
 验证：新增6项用例通过；完整离线回归131项通过，1项既有Starlette警告。YAML解析、Ruff和差异检查通过。Linux容器中官方fnpack从新暂存目录完整构建两架构，校验通过，内置x86 Python业务依赖可加载。公开归档复用本地已验证缓存，Python wheels通过准备脚本取得。独立审查未发现阻断问题。Git历史文件名检查未发现私有音源或.env。
 
 尚未推送和在GitHub实际运行：本地没有remote，未安装gh。已向用户询问目标仓库URL，或新仓库用户名/名称/可见性；收到目标后继续配置远程、核实权限并推送，再验证首次云端构建。不得默认推送参考项目javycoder/fnos_music_ext。
+
+2026-11-06进展：已在用户zhjAdm账号创建私有仓库fnmusic-lx-first，用户亲自完成GitHub CLI授权（系统Keychain保存凭据）。代码07dc3c5已推送main；手动运行42138221543成功，完成测试、x86/ARM打包、校验和产物上传。远程107个文件检查未发现私有音源、.env或work/data。云端130项测试通过、1项私有契约跳过、1项既有警告；产物下载后由verify_fpk验证源码、校验和、架构及私有输入排除通过；实际运行链接：https://github.com/zhjAdm/fnmusic-lx-first/actions/runs/42138221543 。
