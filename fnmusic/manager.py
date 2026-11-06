@@ -18,6 +18,7 @@ from .logs import event, collect, format_text
 import asyncio
 from .library import Library
 from .updates import Updater
+from .self_upgrade import ACTIVE
 
 STATIC = Path(__file__).parent / "static"
 BASE = "/app/fnmusic-lx-first"
@@ -99,6 +100,9 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
             if request.headers.get("sec-fetch-site") == "cross-site":
                 return JSONResponse({"error": "不接受跨站请求"}, status_code=403)
         operation = request.url.path.removeprefix(BASE)
+        if (request.method not in ('GET', 'HEAD') and operation != '/api/update/install'
+                and updater.installer.state()['state'] in ACTIVE):
+            return JSONResponse({'error': '升级正在进行，请完成后再修改设置'}, status_code=409)
         mutations = {
             "/api/source": "source.upload",
             "/api/settings": "settings.save",
@@ -107,6 +111,7 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
             "/api/update/check": "update.check",
             "/api/update/download": "update.download",
             "/api/update/settings": "update.settings",
+            "/api/update/install": "update.install",
             "/api/library": "library.save",
             "/api/library/scan": "library.scan",
             "/api/library/cancel": "library.cancel",
@@ -253,6 +258,13 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
     async def download_update(request: Request):
         await body(request)
         return await updater.start_download()
+
+    @router.post("/api/update/install")
+    async def install_update(request: Request):
+        data = await body(request)
+        if data.get('confirm') is not True:
+            raise ValueError('请确认下载并升级，升级期间扩展会短暂重启')
+        return await updater.start_download(install=True)
 
     @router.get("/api/update/file")
     async def update_file():

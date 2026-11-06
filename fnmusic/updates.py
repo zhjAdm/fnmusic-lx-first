@@ -16,6 +16,7 @@ import httpx
 from . import __version__
 from .logs import event
 from .control import atomic_text, validate_directory
+from .self_upgrade import SelfUpgrade, ACTIVE
 
 REPOSITORY = 'zhjAdm/fnmusic-lx-first'
 RELEASES = f'https://github.com/{REPOSITORY}/releases'
@@ -83,13 +84,14 @@ class Updater:
         self.directory = json.loads(self.settings_path.read_text()).get('download_dir', '') if self.settings_path.exists() else ''
         self.validate_dir = validate_dir
         self.package_mode = 0o600
+        self.installer = SelfUpgrade(config, current=current, arch=self.arch)
 
     def state(self):
         return {'current': self.current, 'arch': self.arch, 'release_url': RELEASES,
                 'latest': self.latest, 'available': bool(self.latest and version(self.latest['version']) > version(self.current)),
                 'download_dir': self.directory,
                 'effective_dir': self.directory or str((self.config.data_dir / 'updates').resolve()),
-                'download': dict(self.download)}
+                'download': dict(self.download), 'upgrade': self.installer.state()}
 
     def validate_folder(self, value):
         if not isinstance(value, str) or len(value) > 4096 or any(ord(c) < 32 for c in value):
@@ -105,7 +107,7 @@ class Updater:
 
     async def save_directory(self, value):
         async with self.download_lock:
-            if self.task and not self.task.done():
+            if (self.task and not self.task.done()) or self.installer.state()['state'] in ACTIVE:
                 raise ValueError('安装包正在下载，请完成后再修改目录')
             folder = await asyncio.to_thread(self.validate_folder, value)
             directory = str(folder) if folder is not None else ''
@@ -174,9 +176,13 @@ class Updater:
                 raise ValueError('无法检查更新，请稍后重试或打开GitHub版本页') from exc
             return self.state()
 
-    async def start_download(self):
+    async def start_download(self, *, install=False):
         async with self.download_lock:
+            if self.installer.state()['state'] in ACTIVE:
+                return self.state()
             if self.task and not self.task.done():
+                if install:
+                    raise ValueError('安装包正在下载，请完成后再点击下载并升级')
                 return self.state()
             if not self.latest or version(self.latest['version']) <= version(self.current):
                 raise ValueError('请先检查更新，目前没有可下载的新版本')
@@ -186,9 +192,42 @@ class Updater:
             if self.path.is_symlink():
                 raise ValueError('安装包目标文件不能是符号链接，请使用其他目录')
             self.package_mode = 0o644 if folder is not None else 0o600
+            if install:
+                self.installer.begin(release['version'])
             self.download = {'state': 'downloading', 'received': 0, 'total': 0, 'version': release['version']}
-            self.task = asyncio.create_task(self.fetch(release))
+            self.task = asyncio.create_task(self.download_release(release, install))
             return self.state()
+
+    async def download_release(self, release, install):
+        try:
+            await self.fetch(release)
+            if install:
+                if self.download['state'] != 'ready':
+                    raise ValueError('安装包下载或校验失败')
+                def stage():
+                    source, _ = self.open_file()
+                    with source:
+                        return self.installer.prepare(source, self.download['sha256'])
+                preparation = asyncio.create_task(asyncio.to_thread(stage))
+                try:
+                    job = await asyncio.shield(preparation)
+                except asyncio.CancelledError:
+                    # Finish the bounded file copy before closing/marking it
+                    # interrupted; it must never launch an installer afterwards.
+                    await preparation
+                    raise
+                await self.installer.launch(job)
+                event(self.config.data_dir, 'updates', 'upgrade.queued')
+        except asyncio.CancelledError:
+            if install and self.installer.running:
+                self.installer.fail()
+            raise
+        except Exception as exc:
+            if install:
+                self.installer.fail()
+                event(self.config.data_dir, 'updates', 'upgrade.failed', level='ERROR', error=exc)
+            else:
+                raise
 
     async def fetch(self, release):
         temporary = None

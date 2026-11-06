@@ -252,6 +252,35 @@ def test_update_api_requires_admin_and_csrf_and_never_installs(tmp_path):
         assert c.get('/api/update/file').status_code == 403
 
 
+def test_upgrade_api_requires_admin_origin_and_explicit_confirmation(tmp_path):
+    app, _ = manager(tmp_path)
+    calls = []
+    async def download(*, install=False):
+        calls.append(install)
+        return {'upgrade': {'state': 'downloading'}}
+    app.state.updater.start_download = download
+    with TestClient(app) as client:
+        path = '/app/fnmusic-lx-first/api/update/install'
+        assert client.post(path, json={'confirm': True}).status_code == 403
+        assert client.post(path, json={'confirm': True}, headers={'X-Trim-Isadmin': 'true'}).status_code == 403
+        assert client.post(path, json={}, headers=ADMIN).status_code == 422
+        assert client.post(path, json={'confirm': 'true'}, headers=ADMIN).status_code == 422
+        assert not calls
+        assert client.post(path, json={'confirm': True}, headers=ADMIN).status_code == 200
+        assert calls == [True]
+
+
+def test_upgrade_blocks_configuration_mutations_but_keeps_status_readable(tmp_path):
+    app, control = manager(tmp_path)
+    app.state.updater.installer.state = lambda: {'supported': True, 'state': 'installing'}
+    with TestClient(app) as client:
+        response = client.post('/api/takeover', json={'enabled': False}, headers=ADMIN)
+        assert response.status_code == 409
+        assert '升级' in response.json()['error']
+        assert client.get('/api/update', headers=ADMIN).status_code == 200
+        assert control.starts == 0
+
+
 def test_update_directory_api_saves_and_is_admin_only(tmp_path):
     app, control = manager(tmp_path)
     folder = tmp_path / 'packages'
