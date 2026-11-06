@@ -7,3 +7,5 @@
 手动Build工作流默认可勾选发布Release，仅发布job有contents写权限；已发布版本不覆盖。新增Publish existing工作流验证原构建成功及归属，再取原源码和产物核对后发布，不重新构建，仅可补全同一提交草稿。
 
 本地完整回归140项通过，1项既有测试工具警告；Ruff、JS语法和工作流YAML解析通过。浏览器模拟检查/下载校验/保存入口已验证；独立审查未发现阻断问题。0.1.9未生成安装包，等待明确打包要求。
+
+完成：Publish existing FPK运行42141991594成功，0.1.8已公开发布并建立v0.1.8标签（07dc3c5）。匿名API核对四个资产的大小及GitHub SHA256 digest均与原构建产物一致；软件Updater使用无凭据客户端可检查公开0.1.8，检查不会自动下载。实际版本页：https://github.com/zhjAdm/fnmusic-lx-first/releases/tag/v0.1.8 。0.1.9仍仅源码，未构建。

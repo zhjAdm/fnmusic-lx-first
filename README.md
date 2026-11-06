@@ -201,3 +201,5 @@ PRIVATE_LX_SCRIPT='/你的路径/音源.js' .venv/bin/python -m pytest tests/tes
 ## 软件更新（0.1.9源码，尚未打包）
 
 在管理页「软件更新」点击检查更新，读取公开GitHub Releases。发现新版本后，可下载匹配架构的安装包；后台完成SHA256校验后，点击保存安装包，再到飞牛应用中心手动安装/升级。不自动安装或重启，不需要GitHub Token；检查更新不会下载音频或音源脚本。安装包只缓存一份在扩展私有数据目录。当前0.1.8仍需从Releases手动下载，软件内入口需安装0.1.9后使用。
+
+安装包已发布到[Releases](https://github.com/zhjAdm/fnmusic-lx-first/releases/latest)，选择对应架构的 `.fpk`；关联的版本标签会出现在Tags中。源码仓库已公开，下载不需要登录GitHub。
