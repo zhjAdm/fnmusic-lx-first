@@ -160,9 +160,9 @@ def execute(job, request, call, sleep):
     staged = poll(call, '/rpc/v1/download/status', 'downloadTaskId', identifier(staged_task.get('downloadTaskId')),
                   seconds=180, sleep=sleep)
     if (staged.get('appName') != APP or staged.get('version') != target
-            or staged.get('packageType') != 'file' or staged.get('installed') is not True):
+            or staged.get('packageType') not in ('file', 'path') or staged.get('installed') is not True):
         raise UpgradeError('staged_package_mismatch')
-    identity = {'appName': APP, 'updateVersion': target, 'packageType': 'file', 'language': 'zh-CN'}
+    identity = {'appName': APP, 'updateVersion': target, 'packageType': staged['packageType'], 'language': 'zh-CN'}
     info = call('/rpc/v1/update/info', identity).get('wizardInfo', {})
     if (not isinstance(info, dict) or type(info.get('installedVolumeID')) is not int
             or info['installedVolumeID'] != request['install_volume']):

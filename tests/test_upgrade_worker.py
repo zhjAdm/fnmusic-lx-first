@@ -58,6 +58,39 @@ def test_rpc_upgrade_preserves_volumes_and_waits_for_actual_task(tmp_path):
     assert (tmp_path / 'task-id').read_text().strip() == 'upgrade-1'
 
 
+def test_nas_path_package_type_is_forwarded_to_upgrade_info_and_task(tmp_path):
+    from fnmusic.upgrade_worker import run
+
+    installed = fixture_job(tmp_path)
+    call, calls = daemon(installed)
+    def path_package(route, body):
+        if route in {'/rpc/v1/update/info', '/rpc/v1/update/task'} and body:
+            assert body['packageType'] == 'path'
+        result = call(route, body)
+        if route == '/rpc/v1/download/status':
+            result.update(packageType='path', packageSourceType='file')
+        return result
+    run(tmp_path, call=path_package, sleep=lambda _: None)
+    assert (tmp_path / 'status').read_text().strip() == 'verifying'
+    assert sum(route == '/rpc/v1/update/task' for route, body in calls) == 1
+
+
+@pytest.mark.parametrize('kind', ['cloud', '', None, 1])
+def test_non_local_package_type_never_submits_upgrade(tmp_path, kind):
+    from fnmusic.upgrade_worker import run
+
+    installed = fixture_job(tmp_path)
+    call, calls = daemon(installed)
+    def wrong(route, body):
+        result = call(route, body)
+        if route == '/rpc/v1/download/status':
+            result['packageType'] = kind
+        return result
+    run(tmp_path, call=wrong, sleep=lambda _: None)
+    assert (tmp_path / 'status').read_text().strip() == 'error'
+    assert not any(route == '/rpc/v1/update/task' for route, body in calls)
+
+
 @pytest.mark.parametrize('mode', ['no_change', 'refused', 'unknown', 'task_failed'])
 def test_failed_or_unobserved_upgrade_never_falls_back_or_reports_done(tmp_path, mode):
     from fnmusic.upgrade_worker import run

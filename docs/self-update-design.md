@@ -50,3 +50,7 @@ appcenter-cli --help
 用户确认本地Unix Socket `/var/run/com.trim.app.center.sock` 的升级前检查接口返回10030参数校验错误。修复采用独立Python标准库worker调用守护进程的暂存、升级前检查、升级提交和状态轮询接口，校验业务code而不是进程退出码。worker连同一份私有Python运行环境提前复制，避免旧安装目录被替换时丢失解释器。
 
 保留旧应用所在的安装卷和数据卷，仅提交update/task，完全不走卸载重装。任务返回成功后检查磁盘版本，再等待新管理服务实际版本；不可观测的提交结果保持unknown，不重试变更。字段及接口事实的参考和验收记录见 superpowers/plans/2026-11-06-daemon-upgrade-fix.md。
+
+## 0.1.16 本地包类型兼容
+
+后续NAS实测明确packageSourceType=file会解析为packageType=path；固定file造成staged_package_mismatch，并使update/info返回10100。传递path后code=0、目标版本和installedVolumeID均正确。0.1.16保留file/path本地类型并向info/task传递实际值；应用、版本、installed和原卷保护不变。详见superpowers/plans/2026-11-06-path-package-type-fix.md。
