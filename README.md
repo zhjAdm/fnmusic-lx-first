@@ -1,6 +1,6 @@
 # 飞牛音乐 LX 扩展
 
-保留官方飞牛音乐 Web / App，接入用户自有的 LX 自定义音源。当前为 **0.1.8 开发版**，已完成本机自动化验证，尚未在真实 fnOS 和官方手机 App 上验收。
+保留官方飞牛音乐 Web / App，接入用户自有的 LX 自定义音源。当前已发布 **0.1.8 开发版**（main 分支包含待打包的 0.1.9 更新），已完成本机自动化验证，尚未在真实 fnOS 和官方手机 App 上验收。
 
 ## 推荐：直接安装 FPK
 
@@ -194,6 +194,10 @@ PRIVATE_LX_SCRIPT='/你的路径/音源.js' .venv/bin/python -m pytest tests/tes
 
 ## GitHub手动构建
 
-已提供只由Actions中Run workflow手动触发的双架构FPK构建流程，普通推送不打包。构建前执行测试，产物仅包含FPK和SHA256，不需要私有音源或密钥。详见[GitHub构建说明](docs/github-build.md)。
+已提供只由Actions中Run workflow手动触发的双架构FPK构建流程，普通推送不打包。手动构建可选择发布到Releases并建立版本标签，已发布版本不覆盖。构建前执行测试，产物仅包含FPK和SHA256，不需要私有音源或密钥。详见[GitHub构建说明](docs/github-build.md)。
 
-代码仓库：[zhjAdm/fnmusic-lx-first](https://github.com/zhjAdm/fnmusic-lx-first)（私有）。进入[GitHub Actions](https://github.com/zhjAdm/fnmusic-lx-first/actions/workflows/build-fpk.yml)手动构建，首次云端构建已通过。
+代码仓库：[zhjAdm/fnmusic-lx-first](https://github.com/zhjAdm/fnmusic-lx-first)（公开）。进入[GitHub Actions](https://github.com/zhjAdm/fnmusic-lx-first/actions/workflows/build-fpk.yml)手动构建，首次云端构建已通过。
+
+## 软件更新（0.1.9源码，尚未打包）
+
+在管理页「软件更新」点击检查更新，读取公开GitHub Releases。发现新版本后，可下载匹配架构的安装包；后台完成SHA256校验后，点击保存安装包，再到飞牛应用中心手动安装/升级。不自动安装或重启，不需要GitHub Token；检查更新不会下载音频或音源脚本。安装包只缓存一份在扩展私有数据目录。当前0.1.8仍需从Releases手动下载，软件内入口需安装0.1.9后使用。

@@ -2,17 +2,18 @@
 
 工作流：`.github/workflows/build-fpk.yml`，名称 **Build fnOS FPK**。
 
-该工作流只接受手动 `workflow_dispatch`；普通提交、推送或标签不会自动构建，也不会自动创建 Release。无需添加音源密钥或个人访问令牌到 Actions Secrets。
+该工作流只接受手动 `workflow_dispatch`；普通提交、推送或标签不会自动构建，手动构建时可勾选发布到 Release；普通push或tag不触发。无需添加音源密钥或个人访问令牌到 Actions Secrets。
 
 ## 手动构建
 
 1. 将代码和工作流推送到自己的 GitHub 仓库。工作流需存在于仓库默认分支，才会显示手动运行入口。
 2. 进入 **Actions → Build fnOS FPK → Run workflow**，选择要构建的分支，点击运行。
 3. 等待安装依赖、测试、双架构构建和包校验通过。
-4. 打开此次运行页面，在 **Artifacts** 下载 `fnmusic-fpk-运行编号`。解压后得到 x86、arm 两份 FPK 和对应 SHA256 文件。
-5. Intel/AMD NAS 选择 x86；ARM64 NAS 选择 arm，按常规方式在飞牛应用中心手动升级。
+4. 若勾选发布，构建成功后会在Releases发布版本、建立版本标签并附加FPK和SHA256；已发布版本拒绝覆盖，需先更新源码版本。
+5. 打开此次运行页面，在 **Artifacts** 下载 `fnmusic-fpk-运行编号`。解压后得到 x86、arm 两份 FPK 和对应 SHA256 文件。
+6. Intel/AMD NAS 选择 x86；ARM64 NAS 选择 arm，按常规方式在飞牛应用中心手动升级。
 
-产物保留30天，需要长期保存时自行下载。此工作流仅生成构建产物，不上传付费音源、不连接NAS，不会自动安装或开启官方接管。
+产物保留30天，需要长期保存时自行下载。工作流不上传付费音源、不连接NAS，不会自动安装或开启官方接管。
 
 ## 构建内容与校验
 
@@ -38,3 +39,11 @@ python -m scripts.verify_fpk dist/*.fpk
 修改版本时同步更新 `pyproject.toml`、`packaging/fpk/manifest.in`、`scripts/build_fpk.py` 及管理页页脚/资源版本参数。
 
 官方参考：[手动触发工作流](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)、[下载构建产物](https://docs.github.com/en/actions/managing-workflow-runs-and-deployments/managing-workflow-runs/downloading-workflow-artifacts)、[upload-artifact](https://github.com/actions/upload-artifact)。
+
+## 发布已有构建
+
+对已完成且仍有Artifacts的构建，可运行 **Publish existing FPK**，填入原Build fnOS FPK的运行ID。它从GitHub服务器直接下载已有产物，用对应源码提交验证后发布，不重新构建，不覆盖已发布版本；仅可补全同一提交的未发布草稿。
+
+源码仓库已按用户要求公开：https://github.com/zhjAdm/fnmusic-lx-first 。安装包入口是[Releases](https://github.com/zhjAdm/fnmusic-lx-first/releases)，Tags展示关联的源码版本标签；FPK位于Release的Assets中。公开Release可供NAS匿名检查下载，不需要将个人GitHub凭据存进软件。
+
+0.1.9源码增加管理页软件更新入口；下载并校验后仍由用户到应用中心手动升级。本次仅发布已有0.1.8，0.1.9等待用户明确打包或手动触发构建。

@@ -14,6 +14,7 @@ from .lx import LX
 from .logs import event, collect, format_text
 import asyncio
 from .library import Library
+from .updates import Updater
 
 STATIC = Path(__file__).parent / "static"
 BASE = "/app/fnmusic-lx-first"
@@ -29,6 +30,7 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
         config, env_path, control or ProxyControl(config.data_dir), lx, **kwargs
     )
     library = Library(config)
+    updater = Updater(config)
     scan_task = None
 
     def start_scan():
@@ -67,6 +69,7 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
             if scan_task:
                 scan_task.cancel()
                 await asyncio.gather(scan_task, return_exceptions=True)
+            await updater.close()
             await settings.close()
             if client:
                 await client.aclose()
@@ -75,6 +78,7 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
     app.state.library = library
+    app.state.updater = updater
 
     @app.middleware("http")
     async def administrator(request, call_next):
@@ -97,6 +101,8 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
             "/api/settings": "settings.save",
             "/api/takeover": "takeover.change",
             "/api/tools/download": "tools.download",
+            "/api/update/check": "update.check",
+            "/api/update/download": "update.download",
             "/api/library": "library.save",
             "/api/library/scan": "library.scan",
             "/api/library/cancel": "library.cancel",
@@ -223,6 +229,25 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
             scan_task.cancel()
             await asyncio.gather(scan_task, return_exceptions=True)
         return library.state()
+
+    @router.get("/api/update")
+    async def update_state():
+        return JSONResponse(updater.state(), headers={"Cache-Control": "no-store"})
+
+    @router.post("/api/update/check")
+    async def check_update(request: Request):
+        await body(request)
+        return await updater.check()
+
+    @router.post("/api/update/download")
+    async def download_update(request: Request):
+        await body(request)
+        return await updater.start_download()
+
+    @router.get("/api/update/file")
+    async def update_file():
+        path, filename = updater.file()
+        return FileResponse(path, filename=filename, media_type="application/octet-stream", headers={"Cache-Control": "no-store"})
 
     async def log_result(source, level, limit):
         return await collect(

@@ -1,8 +1,14 @@
 name: Build fnOS FPK
 
-# Packaging is explicitly requested; pushes never create packages or releases.
+# Packaging/publication is explicitly requested; pushes never create packages or releases.
 on:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: '构建成功后发布到 Releases（版本号必须尚未发布）'
+        required: true
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -61,3 +67,38 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
+
+  release:
+    needs: build
+    if: inputs.publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: fnmusic-fpk-${{ github.run_number }}
+          path: dist
+      - name: Publish a new version without replacing existing releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(python3 -c 'from scripts.build_fpk import VERSION; import re; assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", VERSION); print(VERSION)')
+          tag="v$version"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag already exists. Bump the source version or run with publish disabled."
+            exit 1
+          fi
+          python3 -m scripts.verify_fpk dist/*.fpk
+          cat > release-notes.md <<'NOTES'
+          在飞牛应用中心手动安装/升级：Intel/AMD选择x86，ARM64选择arm；无需卸载。
+          配套SHA256文件用于校验。管理页支持检查新版本并下载、校验匹配架构的安装包，仍需到应用中心手动安装。
+          这是开发版；真实音源播放失败、官方HLS超时等问题请结合运行日志继续确认。软件包不含付费音源或密钥。
+          NOTES
+          printf '\n来源构建：%s/%s/actions/runs/%s\n源码提交：%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$GITHUB_SHA" >> release-notes.md
+          gh release create "$tag" dist/*.fpk dist/*.sha256 --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "fnMusic LX 扩展 $tag" --notes-file release-notes.md --draft
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest

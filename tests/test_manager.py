@@ -236,3 +236,17 @@ def test_library_song_listing_is_admin_only_and_validates_query(tmp_path):
         assert result.headers['cache-control'] == 'no-store'
         assert c.get('/api/library/songs?page=0', headers=ADMIN).status_code == 422
         assert c.get('/api/library/songs?size=1000', headers=ADMIN).status_code == 422
+
+
+def test_update_api_requires_admin_and_csrf_and_never_installs(tmp_path):
+    app, _ = manager(tmp_path)
+    with TestClient(app) as c:
+        assert c.get('/api/update').status_code == 403
+        state = c.get('/api/update', headers=ADMIN)
+        assert state.status_code == 200 and state.headers['cache-control'] == 'no-store'
+        assert state.json()['download']['state'] == 'idle'
+        assert c.post('/api/update/check', json={}).status_code == 403
+        assert c.post('/api/update/download', json={}, headers={'X-Trim-Isadmin': 'true'}).status_code == 403
+        assert c.post('/api/update/download', json={}, headers=ADMIN).status_code == 422
+        assert c.get('/api/update/file', headers=ADMIN).status_code == 422
+        assert c.get('/api/update/file').status_code == 403

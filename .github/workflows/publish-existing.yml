@@ -1,0 +1,75 @@
+name: Publish existing FPK
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: '成功的 Build fnOS FPK 运行ID（仅发布已有产物，不重新构建）'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-existing-fpk
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Validate source build
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          python3 - <<'PY'
+          import json,os,re,subprocess
+          run_id = os.environ['SOURCE_RUN_ID']
+          assert re.fullmatch(r'[0-9]+',run_id), 'Invalid build ID'
+          repo = os.environ['GITHUB_REPOSITORY']
+          data = json.loads(subprocess.check_output(['gh','api',f'repos/{repo}/actions/runs/{run_id}'],text=True))
+          assert data['conclusion']=='success' and data['status']=='completed', 'Build did not succeed'
+          assert data['head_repository']['full_name']==repo and data['path']=='.github/workflows/build-fpk.yml', 'Unexpected source workflow'
+          sha = data['head_sha']
+          assert re.fullmatch(r'[0-9a-f]{40}',sha)
+          with open(os.environ['GITHUB_OUTPUT'],'a') as output:
+              output.write(f'sha={sha}\nnumber={int(data["run_number"])}\n')
+          PY
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ steps.source.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: fnmusic-fpk-${{ steps.source.outputs.number }}
+          path: dist
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify and publish the existing build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          SOURCE_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          python3 -m scripts.verify_fpk dist/*.fpk
+          version=$(python3 -c 'from scripts.build_fpk import VERSION; print(VERSION)')
+          tag="v$version"
+          cat > release-notes.md <<'NOTES'
+          飞牛音乐LX扩展开发版。下载x86（Intel/AMD）或arm（ARM64）安装包，在飞牛应用中心手动安装/升级。
+          产物包含对应SHA256校验文件，不含付费音源或密钥。真实音源播放、官方HLS等故障仍需结合日志确认。
+          NOTES
+          printf '\n来源构建：%s/%s/actions/runs/%s\n源码提交：%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$SOURCE_RUN_ID" "$SOURCE_SHA" >> release-notes.md
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,targetCommitish > existing-release.json 2>/dev/null; then
+            python3 -c 'import json,os; d=json.load(open("existing-release.json")); assert d["isDraft"], "Release is already published"; assert d["targetCommitish"]==os.environ["SOURCE_SHA"], "Draft targets another commit"'
+            gh release upload "$tag" dist/*.fpk dist/*.sha256 --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$tag" dist/*.fpk dist/*.sha256 --repo "$GITHUB_REPOSITORY" --target "$SOURCE_SHA" --title "fnMusic LX 扩展 $tag" --notes-file release-notes.md --draft
+          fi
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest
