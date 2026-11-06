@@ -1,5 +1,5 @@
 appname = fnmusic-lx-first
-version = 0.1.17
+version = 0.1.18
 display_name = fnMusic LX 扩展
 desc = 保留官方飞牛音乐，增加 LX 在线音源、歌单推荐及喜欢后下载。音源和下载目录在管理界面配置，默认不接管官方音乐，可手动开关。
 platform = @ARCH@
