@@ -250,3 +250,17 @@ def test_update_api_requires_admin_and_csrf_and_never_installs(tmp_path):
         assert c.post('/api/update/download', json={}, headers=ADMIN).status_code == 422
         assert c.get('/api/update/file', headers=ADMIN).status_code == 422
         assert c.get('/api/update/file').status_code == 403
+
+
+def test_manager_entry_and_assets_are_not_cached_and_state_reports_running_version(tmp_path):
+    from fnmusic import __version__
+
+    app, _ = manager(tmp_path)
+    with TestClient(app) as client:
+        for path in ('/', '/admin.js', '/admin.css', '/app/fnmusic-lx-first/'):
+            response = client.get(path, headers=ADMIN)
+            assert response.status_code == 200
+            assert response.headers.get('cache-control') == 'no-store'
+        response = client.get('/api/state', headers=ADMIN)
+        assert response.headers.get('cache-control') == 'no-store'
+        assert response.json()['app_version'] == __version__

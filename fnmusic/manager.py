@@ -9,6 +9,7 @@ from fastapi import FastAPI, APIRouter, Request, HTTPException
 from starlette.responses import FileResponse, JSONResponse, PlainTextResponse
 import uvicorn
 from .config import Config, load_env
+from . import __version__
 from .control import Settings, ProxyControl
 from .lx import LX
 from .logs import event, collect, format_text
@@ -161,19 +162,20 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
 
     @router.get("/")
     async def index():
-        return FileResponse(STATIC / "index.html")
+        return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-store"})
 
     @router.get("/admin.css")
     async def css():
-        return FileResponse(STATIC / "admin.css", media_type="text/css")
+        return FileResponse(STATIC / "admin.css", media_type="text/css", headers={"Cache-Control": "no-store"})
 
     @router.get("/admin.js")
     async def js():
-        return FileResponse(STATIC / "admin.js", media_type="text/javascript")
+        return FileResponse(STATIC / "admin.js", media_type="text/javascript", headers={"Cache-Control": "no-store"})
 
     @router.get("/api/state")
     async def state():
-        return await settings.state()
+        state = await settings.state()
+        return JSONResponse({**state, "app_version": __version__}, headers={"Cache-Control": "no-store"})
 
     @router.post("/api/source")
     async def source(request: Request):

@@ -25,3 +25,12 @@ def test_repack_skeleton_removes_previously_bundled_ffmpeg(tmp_path):
     skeleton(stage, "x86")
     assert not (stage / "app/runtime/ffmpeg").exists()
     assert (stage / "app/code/fnmusic/ffmpeg-assets.json").is_file()
+
+
+def test_desktop_entry_changes_cache_key_for_each_package_version(tmp_path):
+    from scripts.build_fpk import VERSION
+
+    skeleton(tmp_path / 'stage', 'x86')
+    entry = json.loads((tmp_path / 'stage/app/ui/config').read_text())['.url']['fnmusic-lx-first.main']
+    assert entry['url'] == '/app/fnmusic-lx-first/?v=' + VERSION
+    assert entry['gatewayPrefix'] == '/app/fnmusic-lx-first'

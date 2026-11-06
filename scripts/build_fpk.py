@@ -20,7 +20,7 @@ from scripts.runtime import (
 )
 
 ROOT = Path(__file__).resolve().parent.parent
-VERSION = "0.1.9"
+VERSION = "0.1.10"
 
 
 def icon(path, size):
@@ -68,6 +68,10 @@ def skeleton(stage, arch):
     template = ROOT / "packaging/fpk"
     for name in ("cmd", "config", "wizard", "app"):
         shutil.copytree(template / name, stage / name, dirs_exist_ok=True)
+    ui_path = stage / "app/ui/config"
+    ui = json.loads(ui_path.read_text())
+    ui[".url"]["fnmusic-lx-first.main"]["url"] = f"/app/fnmusic-lx-first/?v={VERSION}"
+    ui_path.write_text(json.dumps(ui, ensure_ascii=False) + "\n")
     (stage / "manifest").write_text(
         (template / "manifest.in").read_text().replace("@ARCH@", arch)
     )
