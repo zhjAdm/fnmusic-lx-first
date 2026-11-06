@@ -323,9 +323,15 @@ async def collect(data_dir, source="events", level="ALL", limit=200, secrets=())
             text = tail_bytes(Path(data_dir) / "logs/bootstrap.log", 256 * 1024)
         except OSError:
             text = ""
+        # Reverse failure records, keeping each multiline traceback readable.
+        blocks = []
+        for line in text.splitlines():
+            if not blocks or re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z startup failure", line):
+                blocks.append([])
+            blocks[-1].append(line)
         rows = [
-            {"level": "ERROR", "component": "bootstrap", "message": line}
-            for line in text.splitlines()[-limit:]
+            {"level": "ERROR", "component": "bootstrap", "message": "\n".join(block)}
+            for block in blocks[-limit:]
         ]
         result = {
             "entries": rows if level in ("ALL", "ERROR") else [],
@@ -338,6 +344,9 @@ async def collect(data_dir, source="events", level="ALL", limit=200, secrets=())
         }
     else:
         result = {"entries": read_events(data_dir, level, limit), "note": ""}
+
+    # All display/export sources return the latest matching records first.
+    result["entries"].reverse()
 
     # Apply known-credential removal to every field, including system diagnostics.
     def clean(value):

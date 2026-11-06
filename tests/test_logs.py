@@ -178,5 +178,50 @@ async def test_activity_filter_only_returns_search_and_play_events(tmp_path):
     logs.event(tmp_path, "history", "play.redirect", title="青花瓷")
     result = await logs.collect(tmp_path, source="history")
     assert len(result["entries"]) == 2
-    assert result["entries"][0]["keyword"] == "青花瓷"
+    assert result["entries"][0]["event"] == "play.redirect"
+    assert result["entries"][1]["keyword"] == "青花瓷"
     assert all(r["component"] == "history" for r in result["entries"])
+
+
+@pytest.mark.asyncio
+async def test_log_display_returns_latest_matches_first_across_rotated_files(tmp_path):
+    folder = tmp_path / 'logs'
+    folder.mkdir()
+    def row(name, level='INFO'):
+        return json.dumps({'time': '2000-01-01T00:00:00+00:00', 'component': 'manager', 'event': name, 'level': level}) + '\n'
+    (folder / 'events.jsonl.1').write_text(row('oldest') + row('older'))
+    (folder / 'events.jsonl').write_text(row('newer') + row('warning', 'WARNING') + row('newest'))
+    result = await logs.collect(tmp_path, level='INFO', limit=3)
+    assert [r['event'] for r in result['entries']] == ['newest', 'newer', 'older']
+    assert (folder / 'events.jsonl.1').read_text().startswith(row('oldest'))
+    text = logs.format_text(result)
+    assert text.index('newest') < text.index('newer') < text.index('older')
+
+
+@pytest.mark.asyncio
+async def test_service_log_display_is_newest_first(tmp_path, monkeypatch):
+    class Process:
+        returncode = 0
+        async def communicate(self):
+            return (b'\n'.join(json.dumps({'_PID': '1', 'MESSAGE': message, '__REALTIME_TIMESTAMP': timestamp}).encode()
+                               for message, timestamp in [('older', 1000000), ('newer', 2000000)]), b'')
+    async def spawn(*args, **kwargs):
+        return Process()
+    monkeypatch.setattr(logs.asyncio, 'create_subprocess_exec', spawn)
+    result = await logs.collect(tmp_path, source='services')
+    assert [r['message'] for r in result['entries']] == ['newer', 'older']
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_display_reverses_failures_without_reversing_traceback_lines(tmp_path):
+    folder = tmp_path / 'logs'
+    folder.mkdir()
+    (folder / 'bootstrap.log').write_text(
+        '2026-11-05T01:00:00Z startup failure\nold traceback\nold error\n'
+        '2026-11-06T01:00:00Z startup failure\nnew traceback\nnew error\n'
+    )
+    result = await logs.collect(tmp_path, source='bootstrap')
+    assert len(result['entries']) == 2
+    newest, older = result['entries']
+    assert newest['message'] == '2026-11-06T01:00:00Z startup failure\nnew traceback\nnew error'
+    assert 'old error' in older['message']

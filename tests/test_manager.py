@@ -252,6 +252,40 @@ def test_update_api_requires_admin_and_csrf_and_never_installs(tmp_path):
         assert c.get('/api/update/file').status_code == 403
 
 
+def test_update_directory_api_saves_and_is_admin_only(tmp_path):
+    app, control = manager(tmp_path)
+    folder = tmp_path / 'packages'
+    folder.mkdir()
+    with TestClient(app) as client:
+        url = '/app/fnmusic-lx-first/api/update/settings'
+        assert client.post(url, json={'download_dir': str(folder)}).status_code == 403
+        assert client.post(url, json={'download_dir': str(folder)}, headers={'X-Trim-Isadmin': 'true'}).status_code == 403
+        saved = client.post(url, json={'download_dir': str(folder)}, headers=ADMIN)
+        assert saved.status_code == 200
+        assert saved.json()['download_dir'] == str(folder)
+        assert client.get('/api/update', headers=ADMIN).json()['effective_dir'] == str(folder)
+        assert client.post(url, json={}, headers=ADMIN).status_code == 422
+        assert control.starts == 0
+
+
+def test_verified_update_api_streams_checked_file_and_rejects_modified_package(tmp_path):
+    import hashlib
+
+    app, _ = manager(tmp_path)
+    updater = app.state.updater
+    updater.path.parent.mkdir(parents=True)
+    package = b'checked-package'
+    updater.path.write_bytes(package)
+    updater.download = {'state': 'ready', 'filename': 'fixture.fpk', 'sha256': hashlib.sha256(package).hexdigest()}
+    with TestClient(app) as client:
+        response = client.get('/api/update/file', headers=ADMIN)
+        assert response.status_code == 200 and response.content == package
+        assert response.headers['cache-control'] == 'no-store'
+        assert response.headers['content-disposition'] == 'attachment; filename="fixture.fpk"'
+        updater.path.write_bytes(b'modified-package')
+        assert client.get('/api/update/file', headers=ADMIN).status_code == 422
+
+
 def test_manager_entry_and_assets_are_not_cached_and_state_reports_running_version(tmp_path):
     from fnmusic import __version__
 

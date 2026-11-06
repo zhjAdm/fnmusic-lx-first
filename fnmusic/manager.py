@@ -3,10 +3,12 @@
 import argparse
 from contextlib import asynccontextmanager
 import json
+import os
 from pathlib import Path
 import httpx
 from fastapi import FastAPI, APIRouter, Request, HTTPException
-from starlette.responses import FileResponse, JSONResponse, PlainTextResponse
+from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from starlette.background import BackgroundTask
 import uvicorn
 from .config import Config, load_env
 from . import __version__
@@ -31,7 +33,7 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
         config, env_path, control or ProxyControl(config.data_dir), lx, **kwargs
     )
     library = Library(config)
-    updater = Updater(config)
+    updater = Updater(config, **kwargs)
     scan_task = None
 
     def start_scan():
@@ -104,6 +106,7 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
             "/api/tools/download": "tools.download",
             "/api/update/check": "update.check",
             "/api/update/download": "update.download",
+            "/api/update/settings": "update.settings",
             "/api/library": "library.save",
             "/api/library/scan": "library.scan",
             "/api/library/cancel": "library.cancel",
@@ -241,6 +244,11 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
         await body(request)
         return await updater.check()
 
+    @router.post("/api/update/settings")
+    async def save_update_settings(request: Request):
+        data = await body(request)
+        return await updater.save_directory(data.get("download_dir"))
+
     @router.post("/api/update/download")
     async def download_update(request: Request):
         await body(request)
@@ -248,8 +256,19 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
 
     @router.get("/api/update/file")
     async def update_file():
-        path, filename = updater.file()
-        return FileResponse(path, filename=filename, media_type="application/octet-stream", headers={"Cache-Control": "no-store"})
+        source, filename = await asyncio.to_thread(updater.open_file)
+
+        def chunks():
+            try:
+                while block := source.read(1024 * 1024):
+                    yield block
+            finally:
+                source.close()
+
+        return StreamingResponse(chunks(), media_type="application/octet-stream",
+                                 headers={"Cache-Control": "no-store", "Content-Disposition": f'attachment; filename="{filename}"',
+                                          "Content-Length": str(os.fstat(source.fileno()).st_size)},
+                                 background=BackgroundTask(source.close))
 
     async def log_result(source, level, limit):
         return await collect(

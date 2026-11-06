@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import stat
 import uuid
 from urllib.parse import urljoin, urlsplit
 
@@ -14,6 +15,7 @@ import httpx
 
 from . import __version__
 from .logs import event
+from .control import atomic_text, validate_directory
 
 REPOSITORY = 'zhjAdm/fnmusic-lx-first'
 RELEASES = f'https://github.com/{REPOSITORY}/releases'
@@ -28,16 +30,44 @@ def version(value):
     return tuple(map(int, value.split('.')))
 
 
-def digest(path):
+def digest(source):
     sha = hashlib.sha256()
-    with Path(path).open('rb') as source:
-        while block := source.read(1024 * 1024):
-            sha.update(block)
+    while block := source.read(1024 * 1024):
+        sha.update(block)
     return sha.hexdigest()
 
 
+def verified_file(path, expected, mode=None):
+    """Hash and use one regular-file descriptor, never a later pathname target."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    source = os.fdopen(fd, 'rb')
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError('安装包目标不是普通文件')
+        if digest(source) != expected:
+            source.close()
+            return None
+        after = os.fstat(fd)
+        named = path.stat(follow_symlinks=False)
+        if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                or (named.st_dev, named.st_ino) != (after.st_dev, after.st_ino)):
+            raise ValueError('安装包文件已变化，请重新下载')
+        if mode is not None:
+            os.fchmod(fd, mode)
+        source.seek(0)
+        return source
+    except BaseException:
+        source.close()
+        raise
+
+
 class Updater:
-    def __init__(self, config, client=None, *, arch=None, current=__version__):
+    def __init__(self, config, client=None, *, arch=None, current=__version__, validate_dir=validate_directory):
         self.config = config
         self.current = current
         self.arch = arch or {'x86_64': 'x86', 'AMD64': 'x86', 'aarch64': 'arm', 'arm64': 'arm'}.get(platform.machine(), '')
@@ -49,11 +79,42 @@ class Updater:
         self.check_lock = asyncio.Lock()
         self.download_lock = asyncio.Lock()
         self.path = config.data_dir / 'updates/update.fpk'
+        self.settings_path = config.data_dir / 'update-settings.json'
+        self.directory = json.loads(self.settings_path.read_text()).get('download_dir', '') if self.settings_path.exists() else ''
+        self.validate_dir = validate_dir
+        self.package_mode = 0o600
 
     def state(self):
         return {'current': self.current, 'arch': self.arch, 'release_url': RELEASES,
                 'latest': self.latest, 'available': bool(self.latest and version(self.latest['version']) > version(self.current)),
+                'download_dir': self.directory,
+                'effective_dir': self.directory or str((self.config.data_dir / 'updates').resolve()),
                 'download': dict(self.download)}
+
+    def validate_folder(self, value):
+        if not isinstance(value, str) or len(value) > 4096 or any(ord(c) < 32 for c in value):
+            raise ValueError('请输入 NAS 上的绝对目录路径，留空使用默认目录')
+        if not value:
+            return None
+        if not value.startswith('/') or '..' in Path(value).parts:
+            raise ValueError('请输入 NAS 上的绝对目录路径')
+        try:
+            return self.validate_dir(value)
+        except (OSError, RuntimeError):
+            raise ValueError('安装包目录不可用，请检查存储卷和写入权限') from None
+
+    async def save_directory(self, value):
+        async with self.download_lock:
+            if self.task and not self.task.done():
+                raise ValueError('安装包正在下载，请完成后再修改目录')
+            folder = await asyncio.to_thread(self.validate_folder, value)
+            directory = str(folder) if folder is not None else ''
+            try:
+                atomic_text(self.settings_path, json.dumps({'download_dir': directory}, ensure_ascii=False) + '\n')
+            except OSError:
+                raise ValueError('无法保存安装包目录，请检查扩展数据目录权限') from None
+            self.directory = directory
+            return self.state()
 
     async def open(self, url):
         for _ in range(6):
@@ -120,6 +181,11 @@ class Updater:
             if not self.latest or version(self.latest['version']) <= version(self.current):
                 raise ValueError('请先检查更新，目前没有可下载的新版本')
             release = dict(self.latest)
+            folder = await asyncio.to_thread(self.validate_folder, self.directory)
+            self.path = folder / release['filename'] if folder is not None else self.config.data_dir / 'updates/update.fpk'
+            if self.path.is_symlink():
+                raise ValueError('安装包目标文件不能是符号链接，请使用其他目录')
+            self.package_mode = 0o644 if folder is not None else 0o600
             self.download = {'state': 'downloading', 'received': 0, 'total': 0, 'version': release['version']}
             self.task = asyncio.create_task(self.fetch(release))
             return self.state()
@@ -136,10 +202,14 @@ class Updater:
                 raise ValueError('安装包校验文件无效')
             expected = match.group(1).lower()
             folder = self.path.parent
-            folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-            folder.chmod(0o700)
-            if self.path.is_file() and await asyncio.to_thread(digest, self.path) == expected:
-                self.download.update(state='ready', filename=name, sha256=expected, received=self.path.stat().st_size, total=self.path.stat().st_size)
+            if not self.directory:
+                folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+                folder.chmod(0o700)
+            cached = await asyncio.to_thread(verified_file, self.path, expected, self.package_mode)
+            if cached is not None:
+                with cached:
+                    size = os.fstat(cached.fileno()).st_size
+                self.download.update(state='ready', filename=name, path=str(self.path), sha256=expected, received=size, total=size)
                 return
             response = await self.open(base + name)
             total = int(response.headers.get('content-length') or 0)
@@ -160,10 +230,18 @@ class Updater:
                     self.download['received'] = count
                 output.flush()
                 os.fsync(output.fileno())
-            if not count or (total and count != total) or sha.hexdigest() != expected:
-                raise ValueError('安装包SHA256校验失败或下载不完整')
-            temporary.replace(self.path)
-            self.download.update(state='ready', filename=name, sha256=expected, received=count, total=count)
+                if not count or (total and count != total) or sha.hexdigest() != expected:
+                    raise ValueError('安装包SHA256校验失败或下载不完整')
+                actual = os.fstat(output.fileno())
+                named = temporary.stat(follow_symlinks=False)
+                if (named.st_dev, named.st_ino) != (actual.st_dev, actual.st_ino):
+                    raise ValueError('安装包临时文件已变化，请重新下载')
+                os.fchmod(output.fileno(), self.package_mode)
+                temporary.replace(self.path)
+                named = self.path.stat(follow_symlinks=False)
+                if (named.st_dev, named.st_ino) != (actual.st_dev, actual.st_ino):
+                    raise ValueError('安装包文件已变化，请重新下载')
+            self.download.update(state='ready', filename=name, path=str(self.path), sha256=expected, received=count, total=count)
             event(self.config.data_dir, 'updates', 'download.completed')
         except asyncio.CancelledError:
             self.download.update(state='error', error='下载已取消，请重新下载')
@@ -178,9 +256,19 @@ class Updater:
                 temporary.unlink(missing_ok=True)
 
     def file(self):
-        if self.download['state'] != 'ready' or not self.path.is_file():
+        if self.download['state'] != 'ready' or self.path.is_symlink() or not self.path.is_file():
             raise ValueError('暂无已校验的安装包，请先下载更新')
         return self.path, self.download['filename']
+
+    def open_file(self):
+        path, name = self.file()
+        try:
+            source = verified_file(path, self.download['sha256'])
+        except (OSError, ValueError):
+            raise ValueError('安装包文件已变化，请重新下载') from None
+        if source is None:
+            raise ValueError('安装包文件已变化，请重新下载')
+        return source, name
 
     async def close(self):
         if self.task and not self.task.done():
