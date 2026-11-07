@@ -12,6 +12,81 @@ from fnmusic.jobs import Jobs
 from fnmusic.store import Store
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("move", [False, True])
+async def test_wait_for_organized_library_before_binding_after_restart(tmp_path, move):
+    from fnmusic.library import Library
+    from library_fixtures import song
+
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    library_dir = tmp_path / "library"
+    library_dir.mkdir()
+    config = Config(data_dir=tmp_path / "data", download_dir=downloads)
+    library = Library(config, validator=lambda roots: roots)
+    library.save([str(library_dir)], True)
+    store = Store(tmp_path / "state.db")
+    track = store.save_track(dict(RAW, interval="00:01"))
+    store.like("a", track["guid"])
+    downloader = Download(downloads)
+
+    class ReadyOfficial(Official):
+        lookups = []
+
+        async def find_local(self, track, headers, path=None):
+            self.lookups.append(str(path))
+            return {"guid": "organized-guid"} if self.ready else None
+
+    official = ReadyOfficial()
+    official.ready = True  # Even a scanned source file must not be bound.
+    jobs = Jobs(store, FakeLX(), downloader, official, config)
+    jobs.library = library
+    await jobs.run_once("a", {})
+    assert store.jobs("a")[0]["state"] == "waiting_scan"
+    assert official.calls == [] and official.lookups == []
+    source = store.file(track["guid"])["path"]
+    if move:
+        os.unlink(source)
+    store.close()
+    store = Store(tmp_path / "state.db")
+    jobs = Jobs(store, FakeLX(), downloader, official, config)
+    jobs.library = library
+    for _ in range(2):
+        store.update_job("a", track["guid"], next_at=0)
+        await jobs.run_once("a", {})
+    assert downloader.calls == ["master", "flac"]
+    assert store.jobs("a")[0]["attempts"] == 0
+    assert official.lookups == []
+
+    # An unrelated recording in the destination must not satisfy the wait.
+    song(library_dir / "其他专辑", "other.wav", album="现场版")
+    await library.scan()
+    store.update_job("a", track["guid"], next_at=0)
+    await jobs.run_once("a", {})
+    assert official.lookups == [] and official.calls == []
+    assert downloader.calls == ["master", "flac"]
+
+    destination = song(library_dir / "歌手" / "专辑", "01 - 歌曲.wav")
+    # Simulate the next automatic refresh after the 60-second scan cache expires.
+    import json
+    report = library.report()
+    report["finished_at"] = 0
+    library.report_path.write_text(json.dumps(report))
+    official.ready = False
+    store.update_job("a", track["guid"], next_at=0)
+    await jobs.run_once("a", {})
+    assert store.jobs("a")[0]["state"] == "waiting_scan"
+    assert official.lookups == [str(destination)]
+    assert official.calls == []
+    official.ready = True
+    store.update_job("a", track["guid"], next_at=0)
+    await jobs.run_once("a", {})
+    assert store.jobs("a")[0]["state"] == "done"
+    assert official.calls[-1][1]["json"]["trackGUIDs"] == ["organized-guid"]
+    assert downloader.calls == ["master", "flac"]
+    store.close()
+
+
 class FakeLX:
     async def qualities(self, source):
         return ["master", "flac", "320k"]
@@ -280,6 +355,9 @@ async def test_waiting_for_official_binding_logs_transition_once(tmp_path, local
     jobs = Jobs(store, FakeLX(), downloader, official, config)
 
     class Index:
+        def read(self):
+            return {"directories": []}
+
         async def ensure_scanned(self):
             pass
 

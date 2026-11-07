@@ -124,11 +124,17 @@ class Store:
                 "INSERT OR REPLACE INTO file VALUES(?,?,?)", (guid, str(path), quality)
             )
 
-    def recording_file(self, track):
+    def recording_file(self, track, *, require_exists=True):
         for row in self.db.execute(
             "SELECT file.guid,track.payload FROM file JOIN track USING(guid)"
         ):
             if same_recording(track, json.loads(row["payload"])):
+                if not require_exists:
+                    record = self.db.execute(
+                        "SELECT path,quality FROM file WHERE guid=?", (row["guid"],)
+                    ).fetchone()
+                    if record:
+                        return dict(record)
                 existing = self.file(row["guid"])
                 if existing:
                     return existing

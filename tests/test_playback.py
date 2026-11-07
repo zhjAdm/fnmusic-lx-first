@@ -101,28 +101,102 @@ async def test_proxy_range_is_same_resource(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_online_failure_uses_local(tmp_path):
+@pytest.mark.parametrize("head", [False, True])
+async def test_local_is_preferred_and_range_keeps_same_resource(tmp_path, head):
     store = Store(tmp_path / "s.db")
     track = store.save_track(RAW)
 
     class Broken(FakeLX):
-        async def resolve(self, *args):
-            raise ValueError("down")
+        async def qualities(self, *args):
+            pytest.fail("local playback must not query online sources")
 
     class Local:
+        searches = 0
+        requests = []
+
         async def find_local(self, *args, **kwargs):
+            self.searches += 1
             return {"guid": "local"}
 
         async def stream(self, *args):
             from starlette.responses import Response
 
+            self.requests.append(args)
             return Response("local-stream")
 
     async with httpx.AsyncClient() as c:
         media = Media(c, Broken(), Local(), store, Config())
-        response = await media.play(track, "a", {}, None, False)
+        response = await media.play(track, "a", {}, None, head)
         assert response.body == b"local-stream"
         assert response.fnmusic_mode == "local"
+        await media.play(track, "a", {}, "bytes=5-", False)
+        assert media.official.searches == 1
+        assert media.official.requests == [
+            ("local", {}, None, head), ("local", {}, "bytes=5-", False)
+        ]
+    store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["missing", "search", "stream", "status"])
+async def test_local_unavailable_falls_back_to_online(tmp_path, failure):
+    from starlette.responses import Response
+
+    calls = []
+
+    class Local:
+        async def find_local(self, *args):
+            calls.append("local")
+            if failure == "search":
+                raise ValueError("unavailable")
+            return None if failure == "missing" else {"guid": "local"}
+
+        async def stream(self, *args):
+            if failure == "stream":
+                raise httpx.ReadError("unavailable")
+            return Response(status_code=404)
+
+    class Online(FakeLX):
+        async def qualities(self, source):
+            calls.append("online")
+            return await super().qualities(source)
+
+    store = Store(tmp_path / "s.db")
+    track = store.save_track(RAW)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, content=b"audio", headers={"content-type": "audio/mpeg"})
+    )) as client:
+        media = Media(client, Online(), Local(), store, Config(data_dir=tmp_path))
+        response = await media.play(track, "a", {}, None, False)
+        assert response.status_code == 302
+        assert calls == ["local", "online"]
+        assert "url" in media.bindings[("a", track["guid"])][1]
+    store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 403])
+async def test_local_auth_failure_does_not_switch_to_online(tmp_path, status):
+    from starlette.responses import Response
+
+    class Local:
+        async def find_local(self, *args):
+            return {"guid": "local"}
+
+        async def stream(self, *args):
+            return Response(status_code=status)
+
+    class Online(FakeLX):
+        async def qualities(self, *args):
+            pytest.fail("authentication failure must not switch to online")
+
+    store = Store(tmp_path / "s.db")
+    async with httpx.AsyncClient() as client:
+        media = Media(client, Online(), Local(), store, Config(data_dir=tmp_path))
+        with pytest.raises(HTTPException) as caught:
+            await media.play(store.save_track(RAW), "a", {}, None, False)
+        assert caught.value.status_code == status
+        assert media.bindings == {}
     store.close()
 
 

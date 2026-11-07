@@ -158,6 +158,18 @@ class Jobs:
                 job["path"] == str(path) or (indexed and not job["path"])
             )
 
+        def wait_for_organization(path):
+            message = "等待整理至正式曲库；请确认 MoviePilot 正在运行且曲库自动索引已开启"
+            self.store.update_job(
+                user, guid, state="waiting_scan", path=str(path),
+                error=message, next_at=time.time() + 30,
+            )
+            if job["error"] != message:
+                event(
+                    self.config.data_dir, "jobs", "playlist.waiting",
+                    task=guid, state="waiting_organization",
+                )
+
         if not self.store.is_liked(user, guid):
             return
         track = self.store.get_track(guid)
@@ -169,6 +181,10 @@ class Jobs:
             local = await asyncio.to_thread(self.library.find_duplicate, track)
             if not self.store.is_liked(user, guid):
                 return
+            roots = [Path(root).resolve() for root in self.library.read()["directories"]]
+            organized_only = bool(roots) and not any(
+                self.config.download_dir.resolve().is_relative_to(root) for root in roots
+            )
             existing = self.store.file(guid) or self.store.recording_file(track)
             if local:
                 indexed = True
@@ -181,6 +197,14 @@ class Jobs:
                         task=guid,
                         state="local_index",
                     )
+            elif organized_only and (
+                existing or waiting or job["path"]
+                or self.store.recording_file(track, require_exists=False)
+            ):
+                # A missing source can have been moved by an external organizer.
+                # Keep the durable download record; never redownload while waiting.
+                wait_for_organization(existing["path"] if existing else job["path"])
+                return
             elif existing:
                 path = existing["path"]
                 self.store.save_file(guid, path, existing["quality"])
@@ -234,12 +258,16 @@ class Jobs:
                     raise ValueError("All qualities unavailable")
         if not self.store.is_liked(user, guid):
             return
+        if organized_only and not indexed:
+            wait_for_organization(path)
+            return
         self.store.update_job(
             user,
             guid,
             state="waiting_scan",
             path="" if indexed else str(path),
             next_at=time.time() + 15,
+            error="",
         )
         # Local indexing never calls the official scan API. Official lookup is
         # only needed to associate this exact file with an App playlist GUID.

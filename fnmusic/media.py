@@ -156,6 +156,32 @@ class Media:
                 target, range_header, head, force_proxy=force_proxy
             )
         last_error = None
+        if self.official:
+            try:
+                local = await self.official.find_local(track, headers)
+                if local:
+                    result = await self.official.stream(
+                        local["guid"], headers, range_header, head
+                    )
+                    if result.status_code not in (200, 206):
+                        if hasattr(result, "aclose"):
+                            await result.aclose()
+                        if result.status_code in (401, 403):
+                            raise HTTPException(result.status_code, "本地曲库访问被拒绝")
+                        raise ValueError("Local audio unavailable")
+                    self.remember(user, track["guid"], {"local": local["guid"]})
+                    result.fnmusic_mode = "local"
+                    return result
+            except (httpx.HTTPError, ValueError, OSError, StopAsyncIteration) as exc:
+                last_error = exc
+                event(
+                    self.config.data_dir,
+                    "proxy",
+                    "play.local_failed",
+                    level="WARNING",
+                    error=exc,
+                    task=track["guid"],
+                )
         try:
             qualities = await self.lx.qualities(track["source"])
             floor = QUALITIES.index(self.config.play_quality)
@@ -203,15 +229,6 @@ class Media:
                 task=track["guid"],
                 source=track.get("source", ""),
             )
-        if self.official:
-            local = await self.official.find_local(track, headers)
-            if local:
-                self.remember(user, track["guid"], {"local": local["guid"]})
-                result = await self.official.stream(
-                    local["guid"], headers, range_header, head
-                )
-                result.fnmusic_mode = "local"
-                return result
         raise HTTPException(502, "在线音源和本地曲库均无可用资源") from last_error
 
     async def deliver(self, target, range_header, head, *, force_proxy=False):
