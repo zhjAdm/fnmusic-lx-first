@@ -87,11 +87,16 @@ class Updater:
         self.installer = SelfUpgrade(config, current=current, arch=self.arch)
 
     def state(self):
+        upgrade = self.installer.state()
+        if (upgrade['state'] == 'done' and not upgrade.get('cleanup_error')
+                and self.download['state'] == 'ready'
+                and self.download.get('version') == upgrade.get('version')):
+            self.download = {'state': 'installed', 'version': upgrade['version']}
         return {'current': self.current, 'arch': self.arch, 'release_url': RELEASES,
                 'latest': self.latest, 'available': bool(self.latest and version(self.latest['version']) > version(self.current)),
                 'download_dir': self.directory,
                 'effective_dir': self.directory or str((self.config.data_dir / 'updates').resolve()),
-                'download': dict(self.download), 'upgrade': self.installer.state()}
+                'download': dict(self.download), 'upgrade': upgrade}
 
     def validate_folder(self, value):
         if not isinstance(value, str) or len(value) > 4096 or any(ord(c) < 32 for c in value):
@@ -207,7 +212,7 @@ class Updater:
                 def stage():
                     source, _ = self.open_file()
                     with source:
-                        return self.installer.prepare(source, self.download['sha256'])
+                        return self.installer.prepare(source, self.download['sha256'], download_path=self.path)
                 preparation = asyncio.create_task(asyncio.to_thread(stage))
                 try:
                     job = await asyncio.shield(preparation)

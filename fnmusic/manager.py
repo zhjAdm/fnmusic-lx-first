@@ -63,6 +63,12 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
     async def lifespan(app):
         recommendation_store = Store(config.data_dir / "state.db")
         app.state.recommendations = Playlists(recommendation_store, lx, config)
+        async def monitor_upgrades():
+            while True:
+                await asyncio.to_thread(updater.state)
+                await asyncio.sleep(30)
+
+        cleanup_task = asyncio.create_task(monitor_upgrades())
         event(config.data_dir, "manager", "service.started")
         try:
             if library.read()["auto_scan"] and library.read()["directories"]:
@@ -74,6 +80,8 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
         try:
             yield
         finally:
+            cleanup_task.cancel()
+            await asyncio.gather(cleanup_task, return_exceptions=True)
             if scan_task:
                 scan_task.cancel()
                 await asyncio.gather(scan_task, return_exceptions=True)

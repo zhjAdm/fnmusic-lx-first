@@ -230,3 +230,18 @@ input[type=checkbox] { width: 18px; height: 18px; flex-shrink: 0; accent-color: 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
 }
+
+/* Scrollbars stay quiet until the user scrolls or enters a scrollable panel. */
+* { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-track, *::-webkit-scrollbar-corner { background: transparent; }
+*::-webkit-scrollbar-thumb { border-radius: 4px; background: transparent; }
+:where(.is-scrolling, .sidebar:hover, .songs-scroll:hover, pre:hover, textarea:hover, nav:hover) {
+  scrollbar-color: #ced2ca transparent;
+}
+:where(.is-scrolling, .sidebar:hover, .songs-scroll:hover, pre:hover, textarea:hover, nav:hover)::-webkit-scrollbar-thumb {
+  background: #ced2ca;
+}
+@media (forced-colors: active) {
+  * { scrollbar-color: auto; }
+}

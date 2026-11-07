@@ -9,6 +9,7 @@ import platform
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import tarfile
 import time
@@ -53,6 +54,8 @@ class SelfUpgrade:
             from .updates import version
             if phase in {'verifying', 'unknown'} and version(self.current) >= version(data['version']):
                 result['state'] = 'done'
+                if not self.cleanup_packages(self.folder / data['job']):
+                    result['cleanup_error'] = '升级已完成，但安装包清理失败，将稍后重试'
             elif phase in {'queued', 'installing', 'verifying'} and time.time() - data.get('submitted', data['started']) > 1800:
                 result.update(state='error', error='升级等待超时，请在飞牛应用中心检查应用状态')
             elif phase in {'downloading', 'preparing'} and not self.running:
@@ -84,6 +87,54 @@ class SelfUpgrade:
         except (OSError, ValueError, KeyError, TypeError):
             result.update(state='error', error='无法读取升级状态，请在飞牛应用中心检查应用状态')
         return result
+
+    def cleanup_packages(self, job):
+        """Remove only the verified source and private package after success."""
+        marker = job / 'packages-cleaned'
+        if marker.exists():
+            return True
+        try:
+            record_path = job / 'download.json'
+            record = json.loads(record_path.read_text()) if record_path.exists() else None
+            if record is None:
+                # Older initiators saved a checksum but not the source identity.
+                # Consider only the exact configured filename, then verify its hash.
+                from .updates import version
+                request = json.loads((job / 'request.json').read_text())
+                version(request['version'])
+                settings_path = self.data_dir / 'update-settings.json'
+                directory = json.loads(settings_path.read_text()).get('download_dir', '') if settings_path.exists() else ''
+                candidate = (Path(directory) / f'fnmusic-lx-first-{request["version"]}-{self.arch}.fpk'
+                             if directory else self.data_dir / 'updates/update.fpk')
+                try:
+                    identity = self.file_identity(candidate.stat(follow_symlinks=False))
+                    record = {'path': str(candidate), 'identity': identity, 'sha256': request['sha256']}
+                except FileNotFoundError:
+                    pass
+            if record:
+                source_path = Path(record['path'])
+                try:
+                    named = source_path.stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    named = None
+                if named and stat.S_ISREG(named.st_mode) and self.file_identity(named) == record['identity']:
+                    from .updates import verified_file
+                    source = verified_file(source_path, record['sha256'])
+                    if source:
+                        with source:
+                            if self.file_identity(source_path.stat(follow_symlinks=False)) == record['identity']:
+                                source_path.unlink()
+            private = job / 'package.fpk'
+            if private.is_file() and not private.is_symlink():
+                private.unlink(missing_ok=True)
+            atomic_text(marker, 'done\n')
+            return True
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+
+    @staticmethod
+    def file_identity(value):
+        return [value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns]
 
     @staticmethod
     def volume(path):
@@ -117,7 +168,7 @@ class SelfUpgrade:
         if hasattr(self, 'job'):
             atomic_text(self.job / 'status', 'error\n')
 
-    def prepare(self, source, expected):
+    def prepare(self, source, expected, *, download_path=None):
         """Copy a verified descriptor into a private directory and recheck it."""
         atomic_text(self.job / 'status', 'preparing\n')
         path = self.job / 'package.fpk'
@@ -135,6 +186,14 @@ class SelfUpgrade:
         if not count or not re.fullmatch('[a-f0-9]{64}', expected) or sha.hexdigest() != expected:
             raise ValueError('安装包文件已变化，请重新下载')
         self.validate_package(path)
+        if download_path is not None:
+            original = Path(os.path.abspath(download_path))
+            identity = self.file_identity(os.fstat(source.fileno()))
+            if self.file_identity(original.stat(follow_symlinks=False)) != identity:
+                raise ValueError('安装包文件已变化，请重新下载')
+            atomic_text(self.job / 'download.json', json.dumps({
+                'path': str(original), 'identity': identity, 'sha256': expected,
+            }) + '\n')
         self.snapshot_runtime()
         atomic_text(self.job / 'request.json', json.dumps({
             'version': self.target, 'sha256': expected,

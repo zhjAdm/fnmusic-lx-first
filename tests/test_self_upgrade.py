@@ -36,6 +36,50 @@ def upgrade(tmp_path):
     return worker
 
 
+@pytest.mark.parametrize('replace_source', [False, True])
+def test_success_removes_only_its_own_install_packages(tmp_path, replace_source):
+    worker = upgrade(tmp_path)
+    data = package()
+    source = tmp_path / 'download.fpk'
+    source.write_bytes(data)
+    worker.begin('0.1.13')
+    with source.open('rb') as stream:
+        job = worker.prepare(stream, hashlib.sha256(data).hexdigest(), download_path=source)
+    (job / 'status').write_text('verifying\n')
+    assert worker.state()['state'] == 'verifying'
+    assert source.exists() and (job / 'package.fpk').exists()
+    if replace_source:
+        source.unlink()
+        source.write_bytes(b'another-package')
+    worker.current = '0.1.13'
+    assert worker.state()['state'] == 'done'
+    assert not (job / 'package.fpk').exists()
+    assert source.exists() == replace_source
+    assert (job / 'status').exists()
+    assert worker.state()['state'] == 'done'
+
+
+@pytest.mark.parametrize('custom', [False, True])
+def test_success_cleans_package_from_upgrade_started_on_previous_version(tmp_path, custom):
+    worker = upgrade(tmp_path)
+    data = package()
+    folder = tmp_path / ('shared' if custom else 'updates')
+    folder.mkdir()
+    source = folder / ('fnmusic-lx-first-0.1.13-arm.fpk' if custom else 'update.fpk')
+    source.write_bytes(data)
+    if custom:
+        (tmp_path / 'update-settings.json').write_text(json.dumps({'download_dir': str(folder)}))
+    worker.begin('0.1.13')
+    job = worker.prepare(io.BytesIO(data), hashlib.sha256(data).hexdigest())
+    (job / 'status').write_text('verifying\n')
+    worker.current = '0.1.13'
+    assert worker.state()['state'] == 'done'
+    assert not source.exists()
+    assert not (job / 'package.fpk').exists()
+    assert (job / 'status').exists()
+    assert worker.state()['state'] == 'done'
+
+
 def test_upgrade_stages_private_copy_and_checks_package_identity(tmp_path):
     worker = upgrade(tmp_path)
     data = package()
