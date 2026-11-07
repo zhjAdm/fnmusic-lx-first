@@ -1,9 +1,40 @@
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 from test_core import RAW
 
 from fnmusic.app import create_app
 from fnmusic.config import Config
+
+
+@pytest.mark.parametrize("size,page,expected", [(-1, 1, 30), (0, 1, 30), (10, 1, 10), (10, 2, 10), (10, 4, 0)])
+@pytest.mark.parametrize("parameter", ["playlistGUID", "playlistGuid"])
+def test_hot_playlist_mobile_all_tracks_and_regular_pagination(tmp_path, size, page, expected, parameter):
+    def official(req):
+        return httpx.Response(200, json={"code": 0, "data": {"guid": "a"}})
+
+    def lx(req):
+        return httpx.Response(200, json=[dict(RAW, songmid=str(i)) for i in range(30)])
+
+    app = create_app(
+        Config(data_dir=tmp_path, hot_board="test-board"),
+        httpx.AsyncClient(base_url="http://official", transport=httpx.MockTransport(official)),
+        httpx.AsyncClient(base_url="http://lx", transport=httpx.MockTransport(lx)),
+        httpx.AsyncClient(), worker=False,
+    )
+    with TestClient(app) as client:
+        guid = app.state.playlists.guid("a", "hot")
+        response = client.get(
+            "/music/api/v1/track/playlist-detail/list",
+            params={parameter: guid, "page": page, "size": size},
+            headers={"cookie": "valid"},
+        )
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["total"] == 30
+        assert len(data["list"]) == expected
+        assert len({row["guid"] for row in data["list"]}) == expected
+        assert app.state.store.jobs("a") == []
 
 
 def test_search_pages_are_consistent_snapshots(tmp_path):

@@ -137,10 +137,15 @@ def create_app(
             or ""
         )
 
-    def page_args(request):
+    def page_args(request, *, total=None):
         try:
             page = max(1, int(request.query_params.get("page", "1")))
-            size = min(100, max(1, int(request.query_params.get("size", "50"))))
+            size = int(request.query_params.get("size", "50"))
+            if total is not None and size <= 0:
+                # Native playlist clients use -1 to request the complete list.
+                size = max(total, 1) if size == -1 else 50
+            else:
+                size = min(100, max(1, size))
         except ValueError:
             raise HTTPException(400, "分页参数无效") from None
         return page, size
@@ -645,13 +650,17 @@ def create_app(
     @app.get(PREFIX + "track/playlist-detail/list")
     async def playlist_tracks(request: Request):
         user = await identity(request)
-        guid = request.query_params.get("playlistGUID") or guid_of(request)
+        guid = (
+            request.query_params.get("playlistGUID")
+            or request.query_params.get("playlistGuid")
+            or guid_of(request)
+        )
         try:
             app.state.playlists.key(user, guid)
         except KeyError:
             return await forward(request)
-        page, size = page_args(request)
         rows = await app.state.playlists.tracks(user, guid)
+        page, size = page_args(request, total=len(rows))
         return envelope(
             {
                 "list": [
