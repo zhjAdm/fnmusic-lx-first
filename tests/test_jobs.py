@@ -84,6 +84,10 @@ async def test_wait_for_organized_library_before_binding_after_restart(tmp_path,
     assert store.jobs("a")[0]["state"] == "done"
     assert official.calls[-1][1]["json"]["trackGUIDs"] == ["organized-guid"]
     assert downloader.calls == ["master", "flac"]
+    from fnmusic.logs import read_events
+    events = read_events(config.data_dir)
+    assert len([row for row in events if row['event'] == 'playlist.organized']) == 1
+    assert not any(row['event'] == 'download.skipped' for row in events)
     store.close()
 
 

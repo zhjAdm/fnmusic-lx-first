@@ -190,12 +190,13 @@ class Jobs:
                 indexed = True
                 path = local["path"]
                 if not same_waiting_file(path):
+                    organized = organized_only and bool(job["path"]) and job["path"] != str(path)
                     event(
                         self.config.data_dir,
                         "jobs",
-                        "download.skipped",
+                        "playlist.organized" if organized else "download.skipped",
                         task=guid,
-                        state="local_index",
+                        state="organized_file" if organized else "local_index",
                     )
             elif organized_only and (
                 existing or waiting or job["path"]
