@@ -1,12 +1,93 @@
 import asyncio
 import hashlib
 import time
+from datetime import datetime, timedelta, timezone
+
+from .logs import event
+
+BEIJING = timezone(timedelta(hours=8))
 
 
 class Playlists:
     def __init__(self, store, lx, config):
         self.store, self.lx, self.config = store, lx, config
         self.cache = {}
+        self.hot_lock = asyncio.Lock()
+        self.hot_retry_at = 0
+        self.task = None
+
+    @property
+    def hot_key(self):
+        return "hot:" + hashlib.sha256(
+            repr((self.config.hot_source, self.config.hot_board)).encode()
+        ).hexdigest()
+
+    def start(self):
+        self.task = asyncio.create_task(self.loop())
+
+    async def stop(self):
+        if self.task:
+            self.task.cancel()
+            try:
+                await self.task
+            except asyncio.CancelledError:
+                pass
+            self.task = None
+
+    async def loop(self):
+        while True:
+            try:
+                await self.refresh_hot()
+            except Exception:
+                # refresh_hot records the failure and applies a retry cooldown.
+                pass
+            await asyncio.sleep(60)
+
+    async def refresh_hot(self, *, force=False):
+        """Daily shared metadata snapshot; never enqueues favorites or downloads."""
+        async with self.hot_lock:
+            now = time.time()
+            day = datetime.fromtimestamp(now, BEIJING).date().isoformat()
+            snapshot = self.store.playlist_snapshot(self.hot_key)
+            if not force and snapshot and snapshot["day"] == day:
+                return snapshot["tracks"]
+            if not force and time.monotonic() < self.hot_retry_at:
+                if snapshot:
+                    return snapshot["tracks"]
+                raise ValueError("热门推荐暂不可用，请稍后重试")
+            try:
+                raws = await self.lx.hot(self.config.hot_source, self.config.hot_board)
+                tracks, seen = [], set()
+                for raw in raws:
+                    if not isinstance(raw, dict):
+                        continue
+                    try:
+                        track = self.store.save_track(raw)
+                    except (ValueError, TypeError, OverflowError):
+                        continue
+                    if track["guid"] not in seen:
+                        seen.add(track["guid"])
+                        tracks.append(track)
+                    if len(tracks) >= 30:
+                        break
+                if not tracks:
+                    raise ValueError("热门推荐没有有效歌曲")
+                self.store.save_playlist_snapshot(self.hot_key, day, now, tracks)
+                self.hot_retry_at = 0
+                event(
+                    self.config.data_dir, "proxy", "recommendation.updated",
+                    total=len(tracks), source=self.config.hot_source,
+                )
+                return tracks
+            except Exception as exc:
+                self.hot_retry_at = time.monotonic() + 300
+                event(
+                    self.config.data_dir, "proxy", "recommendation.failed",
+                    level="WARNING", error=exc,
+                )
+                if snapshot and not force:
+                    return snapshot["tracks"]
+                raise ValueError("热门推荐暂不可用，请稍后重试") from exc
 
     @staticmethod
     def guid(user, kind):
@@ -21,15 +102,22 @@ class Playlists:
         ]
 
     def cards(self, user):
+        hot = self.store.playlist_snapshot(self.hot_key)
         return [
             {
                 "guid": self.guid(user, key),
                 "name": name,
                 "coverId": None,
-                "trackCount": len(self.cache.get((user, key), (0, []))[1]),
+                "trackCount": (
+                    len(hot["tracks"]) if key == "hot" and hot
+                    else len(self.cache.get((user, key), (0, []))[1])
+                ),
                 "createdAt": 0,
-                "updatedAt": 0,
-                "description": "在线歌单，点击喜欢才下载",
+                "updatedAt": hot["updated_at"] if key == "hot" and hot else 0,
+                "description": (
+                    "每日更新热门推荐，仅刷新歌曲信息，不自动下载" if key == "hot"
+                    else "在线歌单，点击喜欢才下载"
+                ),
             }
             for key, name in self.definitions()
         ]
@@ -42,12 +130,12 @@ class Playlists:
 
     async def tracks(self, user, guid):
         key = self.key(user, guid)
+        if key == "hot":
+            return await self.refresh_hot()
         cached = self.cache.get((user, key))
         if cached and cached[0] > time.monotonic():
             return cached[1]
-        if key == "hot":
-            raws = await self.lx.hot(self.config.hot_source, self.config.hot_board)
-        elif key == "liked":
+        if key == "liked":
             favorites = self.store.favorites(user)
             artists = list(dict.fromkeys(t["artist"] for t in favorites))[:3]
             groups = await asyncio.gather(

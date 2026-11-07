@@ -19,6 +19,8 @@ import asyncio
 from .library import Library
 from .updates import Updater
 from .self_upgrade import ACTIVE
+from .playlists import Playlists
+from .store import Store
 
 STATIC = Path(__file__).parent / "static"
 BASE = "/app/fnmusic-lx-first"
@@ -59,6 +61,8 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
 
     @asynccontextmanager
     async def lifespan(app):
+        recommendation_store = Store(config.data_dir / "state.db")
+        app.state.recommendations = Playlists(recommendation_store, lx, config)
         event(config.data_dir, "manager", "service.started")
         try:
             if library.read()["auto_scan"] and library.read()["directories"]:
@@ -75,6 +79,7 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
                 await asyncio.gather(scan_task, return_exceptions=True)
             await updater.close()
             await settings.close()
+            recommendation_store.close()
             if client:
                 await client.aclose()
             event(config.data_dir, "manager", "service.stopped")
@@ -115,6 +120,7 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
             "/api/library": "library.save",
             "/api/library/scan": "library.scan",
             "/api/library/cancel": "library.cancel",
+            "/api/recommendations/refresh": "recommendation.refresh",
         }
         try:
             response = await call_next(request)
@@ -183,7 +189,30 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
     @router.get("/api/state")
     async def state():
         state = await settings.state()
-        return JSONResponse({**state, "app_version": __version__}, headers={"Cache-Control": "no-store"})
+        return JSONResponse(
+            {**state, "app_version": __version__, "recommendations": recommendation_state()},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    def recommendation_state():
+        recommendations = app.state.recommendations
+        snapshot = recommendations.store.playlist_snapshot(recommendations.hot_key)
+        return {
+            "total": len(snapshot["tracks"]) if snapshot else 0,
+            "updated_at": snapshot["updated_at"] if snapshot else 0,
+            "day": snapshot["day"] if snapshot else "",
+            "source": config.hot_source,
+        }
+
+    @router.get("/api/recommendations")
+    async def recommendations():
+        return JSONResponse(recommendation_state(), headers={"Cache-Control": "no-store"})
+
+    @router.post("/api/recommendations/refresh")
+    async def refresh_recommendations(request: Request):
+        await body(request)
+        await app.state.recommendations.refresh_hot(force=True)
+        return recommendation_state()
 
     @router.post("/api/source")
     async def source(request: Request):

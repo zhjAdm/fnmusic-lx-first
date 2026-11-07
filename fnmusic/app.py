@@ -57,10 +57,12 @@ def create_app(
         app.state.jobs = jobs
         if worker:
             jobs.start()
+            app.state.playlists.start()
         event(config.data_dir, "proxy", "service.started")
         try:
             yield
         finally:
+            await app.state.playlists.stop()
             await jobs.stop()
             await app.state.transcode.stop()
             await oc.aclose()

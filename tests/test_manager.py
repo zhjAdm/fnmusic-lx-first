@@ -47,6 +47,43 @@ def manager(tmp_path):
     return app, control
 
 
+def test_manual_recommendation_refresh_is_admin_only_and_metadata_only(tmp_path):
+    from test_core import RAW
+
+    class Hot:
+        calls = 0
+        broken = False
+
+        async def hot(self, *args):
+            self.calls += 1
+            if self.broken:
+                raise ValueError("unavailable")
+            return [dict(RAW, songmid=str(self.calls))]
+
+    app, _ = manager(tmp_path)
+    lx = Hot()
+    with TestClient(app) as client:
+        path = '/app/fnmusic-lx-first/api/recommendations/refresh'
+        assert client.post(path, json={}).status_code == 403
+        assert client.post(path, json={}, headers={'X-Trim-Isadmin': 'true'}).status_code == 403
+        assert client.get('/api/recommendations').status_code == 403
+        app.state.recommendations.lx = lx
+        initial = client.get('/api/recommendations', headers=ADMIN).json()
+        assert initial['total'] == 0 and initial['updated_at'] == 0
+        for count in (1, 2):
+            result = client.post(path, json={}, headers=ADMIN)
+            assert result.status_code == 200
+            assert result.json()['total'] == 1 and result.json()['updated_at'] > 0
+            assert lx.calls == count
+        saved = client.get('/api/recommendations', headers=ADMIN).json()
+        lx.broken = True
+        assert client.post(path, json={}, headers=ADMIN).status_code == 422
+        assert client.get('/api/recommendations', headers=ADMIN).json() == saved
+        store = app.state.recommendations.store
+        assert store.db.execute('SELECT count(*) FROM job').fetchone()[0] == 0
+        assert store.db.execute('SELECT count(*) FROM file').fetchone()[0] == 0
+
+
 def test_manager_denies_non_admin_and_mutation_without_csrf_header(tmp_path):
     app, _ = manager(tmp_path)
     with TestClient(app) as c:

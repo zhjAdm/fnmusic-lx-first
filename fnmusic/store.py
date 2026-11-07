@@ -25,6 +25,9 @@ class Store:
               attempts INTEGER DEFAULT 0, next_at REAL DEFAULT 0, error TEXT DEFAULT '',
               path TEXT DEFAULT '', official_guid TEXT DEFAULT '', PRIMARY KEY(user,guid));
             CREATE TABLE IF NOT EXISTS file(guid TEXT PRIMARY KEY, path TEXT, quality TEXT);
+            CREATE TABLE IF NOT EXISTS playlist_snapshot(
+              key TEXT PRIMARY KEY, day TEXT NOT NULL, updated_at REAL NOT NULL,
+              payload TEXT NOT NULL);
         """)
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(job)")}
         if "scan_at" not in columns:
@@ -32,6 +35,24 @@ class Store:
                 self.db.execute(
                     "ALTER TABLE job ADD COLUMN scan_at REAL NOT NULL DEFAULT 0"
                 )
+
+    def playlist_snapshot(self, key):
+        row = self.db.execute(
+            "SELECT day,updated_at,payload FROM playlist_snapshot WHERE key=?", (key,)
+        ).fetchone()
+        if row:
+            return dict(
+                day=row["day"], updated_at=row["updated_at"],
+                tracks=json.loads(row["payload"]),
+            )
+        return None
+
+    def save_playlist_snapshot(self, key, day, updated_at, tracks):
+        with self.db:
+            self.db.execute(
+                "INSERT OR REPLACE INTO playlist_snapshot VALUES(?,?,?,?)",
+                (key, day, updated_at, json.dumps(tracks, ensure_ascii=False)),
+            )
 
     def save_track(self, raw):
         track = track_from_raw(raw)
