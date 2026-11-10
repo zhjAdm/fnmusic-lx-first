@@ -382,3 +382,22 @@ def test_manager_entry_and_assets_are_not_cached_and_state_reports_running_versi
         response = client.get('/api/state', headers=ADMIN)
         assert response.headers.get('cache-control') == 'no-store'
         assert response.json()['app_version'] == __version__
+
+
+def test_page_versions_follow_running_version_without_editing_template(tmp_path, monkeypatch):
+    import fnmusic.manager as module
+
+    monkeypatch.setattr(module, '__version__', '9.8.7')
+    app, _ = manager(tmp_path)
+    with TestClient(app) as client:
+        for path in ('/', '/app/fnmusic-lx-first/'):
+            response = client.get(path, headers=ADMIN)
+            assert response.status_code == 200
+            assert response.headers['content-type'].startswith('text/html')
+            assert response.headers['cache-control'] == 'no-store'
+            assert 'admin.css?v=9.8.7' in response.text
+            assert 'admin.js?v=9.8.7' in response.text
+            assert 'data-page-version="9.8.7"' in response.text
+            assert '版本 9.8.7 · LX' in response.text
+            assert '@VERSION@' not in response.text
+        assert client.get('/api/state', headers=ADMIN).json()['app_version'] == '9.8.7'

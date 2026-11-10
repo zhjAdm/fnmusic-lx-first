@@ -34,3 +34,19 @@ def test_desktop_entry_changes_cache_key_for_each_package_version(tmp_path):
     entry = json.loads((tmp_path / 'stage/app/ui/config').read_text())['.url']['fnmusic-lx-first.main']
     assert entry['url'] == '/app/fnmusic-lx-first/?v=' + VERSION
     assert entry['gatewayPrefix'] == '/app/fnmusic-lx-first'
+
+
+def test_future_version_renders_manifest_and_desktop_without_rewriting_sources(tmp_path, monkeypatch):
+    import scripts.build_fpk as builder
+
+    monkeypatch.setattr(builder, 'VERSION', '9.8.7')
+    for arch in ('arm', 'x86'):
+        stage = tmp_path / arch
+        skeleton(stage, arch)
+        manifest = (stage / 'manifest').read_text()
+        assert 'version = 9.8.7\n' in manifest
+        assert '@VERSION@' not in manifest and '@ARCH@' not in manifest
+        entry = json.loads((stage / 'app/ui/config').read_text())['.url']['fnmusic-lx-first.main']
+        assert entry['url'].endswith('?v=9.8.7')
+        assert (stage / 'app/code/fnmusic/static/index.html').read_bytes() == (
+            builder.ROOT / 'fnmusic/static/index.html').read_bytes()

@@ -36,7 +36,9 @@ python -m scripts.build_fpk --arch both --fnpack work/fpk/cache/fnpack-1.2.3-lin
 python -m scripts.verify_fpk dist/*.fpk
 ```
 
-修改版本时同步更新 `pyproject.toml`、`packaging/fpk/manifest.in`、`scripts/build_fpk.py` 及管理页页脚/资源版本参数。
+修改版本只需更新 `fnmusic/__init__.py` 的 `__version__`，使用 `主版本.次版本.修订号` 格式。Python 包元数据和 FPK 构建脚本统一读取它，FPK 清单的 `@VERSION@` 在构建时替换，管理页页脚、页面版本属性和 CSS/JS 缓存参数在响应时替换；源码模板中保留占位符，不需要手动同步其他文件。第三方运行时版本和历史记录不随应用版本修改。
+
+版本回归检查：`python -m pytest tests/test_updates.py::test_release_versions_are_numeric_and_match_package_metadata tests/test_fpk_builder.py tests/test_manager.py::test_page_versions_follow_running_version_without_editing_template -q`。测试会使用模拟的新版本检查清单、桌面入口、页面页脚及资源参数，并确认 FPK 包内源码保持原样，兼容现有源码完整性校验。
 
 官方参考：[手动触发工作流](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)、[下载构建产物](https://docs.github.com/en/actions/managing-workflow-runs-and-deployments/managing-workflow-runs/downloading-workflow-artifacts)、[upload-artifact](https://github.com/actions/upload-artifact)。
 

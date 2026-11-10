@@ -256,7 +256,13 @@ def test_release_versions_are_numeric_and_match_package_metadata():
     import tomllib
 
     assert version('0.1.10') > version('0.1.9')
-    assert __version__ == VERSION == tomllib.loads((ROOT / 'pyproject.toml').read_text())['project']['version']
+    project = tomllib.loads((ROOT / 'pyproject.toml').read_text())
+    assert 'version' not in project['project']
+    assert 'version' in project['project']['dynamic']
+    assert project['tool']['setuptools']['dynamic']['version'] == {'attr': 'fnmusic.__version__'}
+    from setuptools.config.pyprojecttoml import read_configuration
+
+    assert __version__ == VERSION == read_configuration(ROOT / 'pyproject.toml')['project']['version']
     for invalid in ('../../evil', '0.1.9-beta', '01.1.9', 'v0.1.9'):
         with pytest.raises(ValueError):
             version(invalid)

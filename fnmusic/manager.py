@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import httpx
 from fastapi import FastAPI, APIRouter, Request, HTTPException
-from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from starlette.background import BackgroundTask
 import uvicorn
 from .config import Config, load_env
@@ -186,7 +186,10 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
 
     @router.get("/")
     async def index():
-        return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-store"})
+        return HTMLResponse(
+            (STATIC / "index.html").read_text().replace("@VERSION@", __version__),
+            headers={"Cache-Control": "no-store"},
+        )
 
     @router.get("/admin.css")
     async def css():

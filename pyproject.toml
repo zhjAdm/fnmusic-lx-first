@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fnmusic-lx-first"
-version = "0.1.25"
+dynamic = ["version"]
 description = "LX-first online extension for the official fnOS music application"
 readme = "README.md"
 license = "MIT"
@@ -17,6 +17,9 @@ test = ["pytest>=8,<10", "pytest-asyncio>=0.24,<2", "build>=1,<2", "ruff>=0.12,<
 
 [tool.setuptools.packages.find]
 include = ["fnmusic*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "fnmusic.__version__"}
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

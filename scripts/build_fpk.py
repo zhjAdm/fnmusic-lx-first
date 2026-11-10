@@ -12,6 +12,7 @@ import tempfile
 from urllib.parse import urlsplit
 import zipfile
 import zlib
+from fnmusic import __version__ as VERSION
 from scripts.runtime import (
     expose_capabilities,
     restrict_listener,
@@ -20,7 +21,6 @@ from scripts.runtime import (
 )
 
 ROOT = Path(__file__).resolve().parent.parent
-VERSION = "0.1.25"
 
 
 def icon(path, size):
@@ -73,7 +73,8 @@ def skeleton(stage, arch):
     ui[".url"]["fnmusic-lx-first.main"]["url"] = f"/app/fnmusic-lx-first/?v={VERSION}"
     ui_path.write_text(json.dumps(ui, ensure_ascii=False) + "\n")
     (stage / "manifest").write_text(
-        (template / "manifest.in").read_text().replace("@ARCH@", arch)
+        (template / "manifest.in").read_text()
+        .replace("@ARCH@", arch).replace("@VERSION@", VERSION)
     )
     code = stage / "app/code"
     code.mkdir(parents=True, exist_ok=True)
