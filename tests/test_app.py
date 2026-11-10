@@ -7,6 +7,87 @@ from fnmusic.app import create_app
 from fnmusic.config import Config
 
 
+@pytest.mark.parametrize('configured', ['', 'custom-target'])
+@pytest.mark.parametrize('batch_shape', ['list', 'object'])
+def test_official_default_playlist_cover_in_list_detail_and_batch(tmp_path, configured, batch_shape):
+    default = {'guid': 'custom-target' if configured else 'official-default',
+               'name': '自定义收藏' if configured else '默认歌单',
+               'coverId': None, 'trackCount': 17, 'owner': 'a'}
+    other = {'guid': 'other', 'name': '默认歌单' if configured else '其他歌单',
+             'coverId': 'original-cover', 'trackCount': 9}
+
+    def official(req):
+        if req.url.path.endswith('user/me'):
+            return httpx.Response(200, json={'code': 0, 'data': {'guid': 'a'}})
+        if req.url.path.endswith('playlist/detail'):
+            data = default if req.url.params.get('guid') == default['guid'] else other
+        elif req.url.path.endswith('playlist/batch-detail'):
+            data = [default, other] if batch_shape == 'list' else {'list': [default, other], 'total': 2}
+        else:
+            data = {'list': [default, other], 'total': 2}
+        return httpx.Response(200, json={'code': 0, 'data': data})
+
+    app = create_app(Config(data_dir=tmp_path, default_playlist_guid=configured),
+                     httpx.AsyncClient(base_url='http://official', transport=httpx.MockTransport(official)),
+                     httpx.AsyncClient(), httpx.AsyncClient(), worker=False)
+    with TestClient(app) as client:
+        headers = {'cookie': 'valid'}
+        rows = client.get('/music/api/v1/playlist/list', headers=headers).json()['data']['list']
+        actual = next(row for row in rows if row['guid'] == default['guid'])
+        cover = actual['coverId']
+        assert isinstance(cover, str) and len(cover) == 32
+        assert actual == dict(default, coverId=cover)
+        assert next(row for row in rows if row['guid'] == 'other') == other
+        detail = client.get('/music/api/v1/playlist/detail', params={'guid': default['guid']},
+                            headers=headers).json()['data']
+        assert detail == actual
+        batch = client.get('/music/api/v1/playlist/batch-detail',
+                           params={'guids': default['guid']+',other'}, headers=headers).json()['data']
+        batch_rows = batch if isinstance(batch, list) else batch['list']
+        assert batch_rows == [actual, other]
+        built_in = app.state.playlists.guid('a', 'explore')
+        mixed = client.get('/music/api/v1/playlist/batch-detail',
+                           params={'guids': built_in+','+default['guid']}, headers=headers).json()['data']['list']
+        assert next(row for row in mixed if row['guid'] == default['guid']) == actual
+        response = client.get('/music/api/v1/static/cover', params={'id': cover}, headers=headers)
+        assert response.status_code == 200 and response.headers['content-type'] == 'image/png'
+        head = client.head('/music/api/v1/static/cover', params={'id': cover}, headers=headers)
+        assert head.status_code == 200 and head.content == b''
+        assert app.state.store.jobs('a') == []
+
+
+@pytest.mark.parametrize('kind', ['hot', 'explore', 'archaeology'])
+def test_builtin_playlist_cover_supports_query_path_head_and_auth(tmp_path, kind):
+    from pathlib import Path
+
+    upstream = []
+    def official(req):
+        upstream.append(req.url.path)
+        return httpx.Response(200, json={'code': 0, 'data': {'guid': 'a'}})
+
+    app = create_app(Config(data_dir=tmp_path),
+                     httpx.AsyncClient(base_url='http://official', transport=httpx.MockTransport(official)),
+                     httpx.AsyncClient(), httpx.AsyncClient(), worker=False)
+    with TestClient(app) as client:
+        card = next(c for c in app.state.playlists.cards('a')
+                    if c['guid'] == app.state.playlists.guid('a', kind))
+        cover = card['coverId']
+        assert isinstance(cover, str) and len(cover) == 32
+        body = (Path(__file__).parents[1] / f'fnmusic/static/playlist-{kind}-v1.png').read_bytes()
+        for url in (f'/music/api/v1/static/cover?id={cover}',
+                    f'/music/api/v1/static/cover?coverId={cover}',
+                    f'/music/api/v1/static/cover/{cover}'):
+            response = client.get(url, headers={'cookie': 'valid'})
+            assert response.status_code == 200 and response.content == body
+            assert response.headers['content-type'] == 'image/png'
+            assert 'private' in response.headers['cache-control']
+            head = client.head(url, headers={'cookie': 'valid'})
+            assert head.status_code == 200 and head.content == b''
+            assert int(head.headers['content-length']) == len(body)
+        assert client.get(f'/music/api/v1/static/cover?id={cover}').status_code == 401
+        assert set(upstream) == {'/music/api/v1/user/me'}
+
+
 def test_archaeology_native_tracks_pagination_playback_and_user_isolation(tmp_path):
     from fnmusic.history import History
 

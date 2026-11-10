@@ -9,6 +9,7 @@ from .models import normalize
 from .discovery import Discovery, day_now
 from .library import Library
 from .official import session_key
+from .images import playlist_cover_id
 
 BEIJING = timezone(timedelta(hours=8))
 
@@ -135,7 +136,7 @@ class Playlists:
             {
                 "guid": self.guid(user, key),
                 "name": name,
-                "coverId": None,
+                "coverId": playlist_cover_id(key),
                 "trackCount": (
                     len(hot["tracks"]) if key == "hot" and hot
                     else len(self.cache.get((user, key), (0, []))[1])
@@ -157,6 +158,25 @@ class Playlists:
             if self.guid(user, key) == guid:
                 return key
         raise KeyError("Unknown playlist for this user")
+
+    def official_covers(self, data):
+        """Decorate the user's real default playlist, preserving official metadata."""
+        if isinstance(data, list):
+            return [self.official_covers(row) for row in data]
+        if not isinstance(data, dict):
+            return data
+        if isinstance(data.get("list"), list):
+            return dict(data, list=self.official_covers(data["list"]))
+        if isinstance(data.get("playlist"), dict):
+            return dict(data, playlist=self.official_covers(data["playlist"]))
+        if not data.get("guid"):
+            return data
+        matches = (
+            data["guid"] == self.config.default_playlist_guid
+            if self.config.default_playlist_guid
+            else data.get("name") == self.config.playlist_name
+        )
+        return dict(data, coverId=playlist_cover_id("default")) if matches else data
 
     async def tracks(self, user, guid, headers=None, official=None):
         key = self.key(user, guid)

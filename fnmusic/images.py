@@ -1,9 +1,33 @@
+from functools import lru_cache
+import hashlib
+from pathlib import Path
 from urllib.parse import urljoin
 
 from fastapi import HTTPException
 from starlette.responses import Response
 
 from .media import public_url
+
+
+@lru_cache(maxsize=1)
+def _playlist_covers():
+    """Trusted bundled assets only; content IDs change when artwork is replaced."""
+    static = Path(__file__).parent / "static"
+    covers = {}
+    for kind in ("hot", "explore", "archaeology", "default"):
+        path = static / f"playlist-{kind}-v1.png"
+        guid = hashlib.md5(path.read_bytes(), usedforsecurity=False).hexdigest()
+        covers[kind] = (guid, path)
+    return covers
+
+
+def playlist_cover_id(kind):
+    entry = _playlist_covers().get(kind)
+    return entry[0] if entry else None
+
+
+def playlist_cover_path(guid):
+    return next((path for cover, path in _playlist_covers().values() if cover == guid), None)
 
 
 async def image_response(client, url, head=False):

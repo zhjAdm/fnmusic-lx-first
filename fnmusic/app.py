@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from starlette.responses import JSONResponse
+from starlette.responses import FileResponse, JSONResponse
 
 from .audio import Audio
 from .config import Config
@@ -16,6 +16,7 @@ from .playlists import Playlists
 from .store import Store
 from .transcode import Transcode
 from .logs import event, activity, safe_route
+from .images import image_response, playlist_cover_path
 
 PREFIX = "/music/api/v1/"
 
@@ -555,13 +556,18 @@ def create_app(
             or request.query_params.get("coverId")
             or guid_of(request)
         )
+        artwork = playlist_cover_path(guid)
+        if artwork:
+            await identity(request)
+            return FileResponse(
+                artwork, media_type="image/png",
+                headers={"Cache-Control": "private, max-age=86400"},
+            )
         item = track(guid)
         if not item:
             return await forward(request)
         await identity(request)
         # Covers use their own image validator; audio-only open_media is deliberately not reused.
-        from .images import image_response
-
         return await image_response(
             app.state.media.client, item["cover"], request.method == "HEAD"
         )
@@ -639,7 +645,7 @@ def create_app(
             PREFIX + "playlist/list", request.headers
         )
         data = data or {"list": [], "total": 0}
-        rows = app.state.playlists.cards(user) + data.get("list", [])
+        rows = app.state.playlists.cards(user) + app.state.playlists.official_covers(data.get("list", []))
         return envelope(
             dict(data, list=rows[(page - 1) * size : page * size], total=len(rows))
         )
@@ -652,7 +658,11 @@ def create_app(
             (c for c in app.state.playlists.cards(user) if c["guid"] == guid), None
         )
         if not card:
-            return await forward(request)
+            data = await app.state.official.api(
+                "GET", PREFIX + "playlist/detail", request.headers,
+                params=request.query_params,
+            )
+            return envelope(app.state.playlists.official_covers(data))
         rows = await playlist_rows(request, user, guid)
         return envelope(dict(card, trackCount=len(rows)))
 
@@ -668,7 +678,11 @@ def create_app(
         online = [cards[g] for g in guids if g in cards]
         rest = [g for g in guids if g not in cards]
         if not online:
-            return await forward(request)
+            data = await app.state.official.api(
+                "GET", PREFIX + "playlist/batch-detail", request.headers,
+                params=request.query_params,
+            )
+            return envelope(app.state.playlists.official_covers(data))
         official = []
         if rest:
             data = await app.state.official.api(
@@ -677,6 +691,7 @@ def create_app(
                 request.headers,
                 params={"guids": ",".join(rest)},
             )
+            data = app.state.playlists.official_covers(data)
             official = data if isinstance(data, list) else (data or {}).get("list", [])
         return envelope({"list": online + official})
 

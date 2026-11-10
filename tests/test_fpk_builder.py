@@ -12,6 +12,8 @@ def test_fpk_skeleton_and_no_private_inputs(tmp_path):
     ]
     assert entry["gatewaySocket"] == "fnmusic-lx-first.sock"
     assert (stage / "app/code/fnmusic/static/index.html").exists()
+    for kind in ('hot', 'explore', 'archaeology', 'default'):
+        assert (stage / f'app/code/fnmusic/static/playlist-{kind}-v1.png').is_file()
     assert not list(stage.rglob("*music-source-paid*"))
     assert not list(stage.rglob(".env"))
     assert (stage / "cmd/main").stat().st_mode & 0o111
