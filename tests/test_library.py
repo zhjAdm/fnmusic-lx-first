@@ -166,3 +166,26 @@ def test_song_list_empty_index_and_limits(tmp_path):
     for kwargs in ({'page': 0}, {'size': 101}, {'q': 'x' * 201}):
         with pytest.raises(ValueError):
             lib.songs(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_old_index_rescan_reads_genre_even_when_audio_unchanged(tmp_path):
+    from mutagen.wave import WAVE
+    from mutagen.id3 import TCON
+
+    lib, root = library(tmp_path)
+    path = song(root)
+    audio = WAVE(path)
+    audio.tags.add(TCON(encoding=3, text=["Jazz"]))
+    audio.save()
+    await lib.scan()
+    db = lib.connect()
+    assert db.execute("SELECT genre FROM audio").fetchone()[0] == "Jazz"
+    # An old index has the same file size and mtime, but lacks genre metadata.
+    db.execute("ALTER TABLE audio DROP COLUMN genre")
+    db.commit()
+    db.close()
+    await lib.scan()
+    db = lib.connect()
+    assert db.execute("SELECT genre FROM audio").fetchone()[0] == "Jazz"
+    db.close()

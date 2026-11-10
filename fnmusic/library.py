@@ -105,6 +105,7 @@ def metadata(path):
         "title": tag("title", "TIT2") or path.stem,
         "artist": tag("artist", "TPE1"),
         "album": tag("album", "TALB"),
+        "genre": tag("genre", "TCON"),
         "duration": round(float(getattr(audio.info, "length", 0)) * 1000),
         "size": after.st_size,
         "mtime_ns": after.st_mtime_ns,
@@ -203,6 +204,9 @@ class Library:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS audio(path TEXT PRIMARY KEY, root TEXT, title TEXT,artist TEXT,album TEXT,duration INTEGER,size INTEGER,mtime_ns INTEGER,seen TEXT)"
             )
+            columns = {row[1] for row in db.execute("PRAGMA table_info(audio)")}
+            if "genre" not in columns:
+                db.execute("ALTER TABLE audio ADD COLUMN genre TEXT DEFAULT NULL")
         except BaseException:
             db.close()
             raise
@@ -210,7 +214,7 @@ class Library:
 
     def store_metadata(self, db, row, root, run):
         db.execute(
-            "INSERT OR REPLACE INTO audio VALUES(?,?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO audio(path,root,title,artist,album,duration,size,mtime_ns,seen,genre) VALUES(?,?,?,?,?,?,?,?,?,?)",
             (
                 row["path"],
                 root,
@@ -221,6 +225,7 @@ class Library:
                 row["size"],
                 row["mtime_ns"],
                 run,
+                row.get("genre", ""),
             ),
         )
 
@@ -269,6 +274,7 @@ class Library:
                         ).fetchone()
                         if (
                             previous
+                            and previous["genre"] is not None
                             and previous["size"] == info.st_size
                             and previous["mtime_ns"] == info.st_mtime_ns
                         ):

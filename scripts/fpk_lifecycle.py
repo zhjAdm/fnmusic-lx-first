@@ -62,6 +62,8 @@ def initialize(root, state):
         values["LX_PLATFORMS"] = "kg,tx,kw,wy,mg"
         if values.get("HOT_SOURCE") == "kw" and not values.get("HOT_BOARD"):
             values["HOT_SOURCE"] = "kg"
+    if values.get("HOT_SOURCE") == "kg" and not values.get("HOT_BOARD"):
+        values["HOT_SOURCE"] = "kg,tx"
     defaults = {
         "LX_PASSWORD": secrets.token_urlsafe(32),
         "LX_PLATFORMS": "kg,tx,kw,wy,mg",
@@ -72,7 +74,7 @@ def initialize(root, state):
         "SCAN_PATH": "",
         "SCAN_BODY": "{}",
         "PUBLIC_PLAYLISTS": "[]",
-        "HOT_SOURCE": "kg",
+        "HOT_SOURCE": "kg,tx",
         "HOT_BOARD": "",
     }
     for key, value in defaults.items():

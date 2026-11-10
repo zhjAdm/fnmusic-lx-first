@@ -1,3 +1,5 @@
+import hashlib
+
 import httpx
 from fastapi import HTTPException
 from starlette.responses import Response
@@ -34,6 +36,12 @@ HOP_HEADERS = {
 
 def session_headers(headers):
     return {k: v for k, v in headers.items() if k.lower() in AUTH_HEADERS}
+
+
+def session_key(headers):
+    return hashlib.sha256(repr(sorted(
+        (k.lower(), v) for k, v in session_headers(headers).items()
+    )).encode()).hexdigest()
 
 
 def forward_headers(headers):

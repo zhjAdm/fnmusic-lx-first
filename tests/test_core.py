@@ -105,3 +105,52 @@ async def test_search_preserves_platform_priority_when_a_platform_fails(kg_fails
         assert [r['source'] for r in result] == (
             ['tx', 'kw', 'wy', 'mg'] if kg_fails else ['kg', 'tx', 'kw', 'wy', 'mg']
         )
+
+
+@pytest.mark.asyncio
+async def test_style_recommendations_resolve_platform_tags_and_mix_artists():
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        source = request.url.params["source"]
+        if request.url.path.endswith("/tags"):
+            return httpx.Response(200, json={"tags": [{"name": "风格", "list": [
+                {"id": source + "-rock", "name": "摇滚"}]}],
+                "sortList": [{"id": "6" if source == "kg" else "hot"}]})
+        if request.url.path.endswith("/list"):
+            assert request.url.params["tagId"] == source + "-rock"
+            assert request.url.params["sortId"] == ("6" if source == "kg" else "hot")
+            return httpx.Response(200, json={"list": [{"id": source + "-playlist"}]})
+        return httpx.Response(200, json={"list": [
+            dict(RAW, source=source, hash=source, singer=source + "新歌手")]})
+
+    async with httpx.AsyncClient(base_url="http://lx", transport=httpx.MockTransport(handler)) as client:
+        rows = await LX(client, "fixture", ["kg", "tx"]).styles(["摇滚"], ["kg", "tx"])
+    assert [r["source"] for r in rows] == ["kg", "tx"]
+    assert all(r["recommendation_style"] == "摇滚" for r in rows)
+    assert not any(r.url.path.endswith("/search") for r in calls)
+
+
+@pytest.mark.asyncio
+async def test_style_playlist_prefers_real_rating_then_popularity():
+    selected = []
+
+    def handler(request):
+        if request.url.path.endswith("/tags"):
+            return httpx.Response(200, json={"tags": [{"name": "风格", "list": [
+                {"id": "rock", "name": "摇滚"}]}], "sortList": [{"id": "hot"}]})
+        if request.url.path.endswith("/list"):
+            return httpx.Response(200, json={"list": [
+                {"id": "low", "grade": 2, "play_count": "10亿"},
+                {"id": "high", "grade": 9, "play_count": "1万"},
+                {"id": "mid", "grade": 8, "play_count": "2万"}]})
+        selected.append(request.url.params["id"])
+        return httpx.Response(200, json={"list": [
+            dict(RAW, songmid="low", name="低分", rating=2),
+            dict(RAW, songmid="high", name="高分", rating=9)]})
+
+    async with httpx.AsyncClient(base_url="http://lx", transport=httpx.MockTransport(handler)) as client:
+        rows = await LX(client, "fixture", ["kg"]).styles(["摇滚"], ["kg"])
+    assert selected == ["high", "mid"]
+    assert [r["name"] for r in rows[:2]] == ["高分", "高分"]

@@ -2,8 +2,13 @@ import asyncio
 import hashlib
 import time
 from datetime import datetime, timedelta, timezone
+from itertools import zip_longest
 
 from .logs import event
+from .models import normalize
+from .discovery import Discovery, day_now
+from .library import Library
+from .official import session_key
 
 BEIJING = timezone(timedelta(hours=8))
 
@@ -12,6 +17,9 @@ class Playlists:
     def __init__(self, store, lx, config):
         self.store, self.lx, self.config = store, lx, config
         self.cache = {}
+        self.discovery = Discovery(config, store, lx)
+        self.explore_modes = {}
+        self.native_cache = {}
         self.hot_lock = asyncio.Lock()
         self.hot_retry_at = 0
         self.task = None
@@ -56,8 +64,22 @@ class Playlists:
                     return snapshot["tracks"]
                 raise ValueError("热门推荐暂不可用，请稍后重试")
             try:
-                raws = await self.lx.hot(self.config.hot_source, self.config.hot_board)
-                tracks, seen = [], set()
+                groups = await asyncio.gather(
+                    *(self.lx.hot(source, self.config.hot_board)
+                      for source in self.config.hot_sources),
+                    return_exceptions=True,
+                )
+                available = []
+                for source, group in zip(self.config.hot_sources, groups):
+                    if isinstance(group, Exception):
+                        event(
+                            self.config.data_dir, "proxy", "recommendation.source_failed",
+                            level="WARNING", source=source, error=group,
+                        )
+                    elif isinstance(group, list):
+                        available.append(group)
+                raws = (raw for row in zip_longest(*available) for raw in row)
+                tracks, seen, songs = [], set(), set()
                 for raw in raws:
                     if not isinstance(raw, dict):
                         continue
@@ -65,8 +87,13 @@ class Playlists:
                         track = self.store.save_track(raw)
                     except (ValueError, TypeError, OverflowError):
                         continue
-                    if track["guid"] not in seen:
+                    # Ignore album differences between platforms, but keep version labels.
+                    song = (normalize(track["title"]), normalize(track["artist"]))
+                    known = song[0] != normalize("未知歌曲") and song[1] != normalize("未知歌手")
+                    if track["guid"] not in seen and (not known or song not in songs):
                         seen.add(track["guid"])
+                        if known:
+                            songs.add(song)
                         tracks.append(track)
                     if len(tracks) >= 30:
                         break
@@ -96,7 +123,8 @@ class Playlists:
         ).hexdigest()
 
     def definitions(self):
-        return [("hot", "热门推荐"), ("liked", "猜你喜欢")] + [
+        return [("hot", "热门推荐"),
+                ("explore", "音乐探险"), ("archaeology", "曲库考古")] + [
             (f"public:{i}", row.get("name") or "在线歌单")
             for i, row in enumerate(self.config.public_playlists)
         ]
@@ -116,6 +144,8 @@ class Playlists:
                 "updatedAt": hot["updated_at"] if key == "hot" and hot else 0,
                 "description": (
                     "每日更新热门推荐，仅刷新歌曲信息，不自动下载" if key == "hot"
+                    else "熟悉风格与新风格混合，探险程度可在扩展管理页设置" if key == "explore"
+                    else "每天重访本地收藏；无记录仅指扩展保留的播放活动" if key == "archaeology"
                     else "在线歌单，点击喜欢才下载"
                 ),
             }
@@ -128,52 +158,71 @@ class Playlists:
                 return key
         raise KeyError("Unknown playlist for this user")
 
-    async def tracks(self, user, guid):
+    async def tracks(self, user, guid, headers=None, official=None):
         key = self.key(user, guid)
         if key == "hot":
             return await self.refresh_hot()
+        if key == "archaeology":
+            if headers is None or official is None:
+                raise ValueError("曲库考古需要当前用户的飞牛音乐会话")
+            library = Library(self.config)
+            revision = repr((library.read(), library.report().get("finished_at")))
+            cache_key = (user, session_key(headers), day_now(), revision)
+            cached = self.native_cache.get(cache_key)
+            if cached and cached[0] > time.monotonic():
+                return cached[1]
+            rows = await self.discovery.archaeology(user, headers, official)
+            if len(self.native_cache) >= 100:
+                self.native_cache.pop(next(iter(self.native_cache)))
+            self.native_cache[cache_key] = (time.monotonic() + 300, rows)
+            return rows
+        if key == "explore":
+            mode = self.discovery.settings()["exploration_mode"]
+            if self.explore_modes.get(user) != mode:
+                self.cache.pop((user, key), None)
+            if user not in self.explore_modes and len(self.explore_modes) >= 500:
+                self.explore_modes.pop(next(iter(self.explore_modes)))
+            self.explore_modes[user] = mode
         cached = self.cache.get((user, key))
         if cached and cached[0] > time.monotonic():
             return cached[1]
-        if key == "liked":
-            favorites = self.store.favorites(user)
-            artists = list(dict.fromkeys(t["artist"] for t in favorites))[:3]
-            groups = await asyncio.gather(
-                *(self.lx.search(artist, 1, 20) for artist in artists),
-                return_exceptions=True,
-            )
-            raws = [x for group in groups if isinstance(group, list) for x in group]
+        if key == "explore":
+            tracks = await self.discovery.explore(user, self.refresh_hot)
+            self.cache_tracks(user, key, tracks)
+            return tracks
+        entry = self.config.public_playlists[int(key.split(":")[1])]
+        raws = []
+        # Bounded pagination; fail rather than claim an incomplete imported list.
+        for page in range(1, 101):
+            data = await self.lx.playlist(entry["source"], str(entry["id"]), page)
+            rows = data["list"]
+            old = len(raws)
+            for raw in rows:
+                raw = dict(raw, source=raw.get("source") or entry["source"])
+                if raw not in raws:
+                    raws.append(raw)
+            total = data.get("total", data.get("totalNum"))
+            if not rows or (isinstance(total, int) and len(raws) >= total):
+                break
+            if len(raws) == old:
+                raise ValueError("Playlist pagination did not advance")
         else:
-            entry = self.config.public_playlists[int(key.split(":")[1])]
-            raws = []
-            # Bounded pagination; fail rather than claim an incomplete imported list.
-            for page in range(1, 101):
-                data = await self.lx.playlist(entry["source"], str(entry["id"]), page)
-                rows = data["list"]
-                old = len(raws)
-                for raw in rows:
-                    raw = dict(raw, source=raw.get("source") or entry["source"])
-                    if raw not in raws:
-                        raws.append(raw)
-                total = data.get("total", data.get("totalNum"))
-                if not rows or (isinstance(total, int) and len(raws) >= total):
-                    break
-                if len(raws) == old:
-                    raise ValueError("Playlist pagination did not advance")
-            else:
-                raise ValueError("Playlist exceeds 100 pages")
+            raise ValueError("Playlist exceeds 100 pages")
         tracks = []
         seen = set()
         for raw in raws:
-            track = self.store.save_track(raw)
-            if track["guid"] in seen:
+            try:
+                track = self.store.save_track(raw)
+            except (ValueError, TypeError, OverflowError):
                 continue
-            if key == "liked" and self.store.is_liked(user, track["guid"]):
+            if track["guid"] in seen:
                 continue
             tracks.append(track)
             seen.add(track["guid"])
-            if key in {"hot", "liked"} and len(tracks) >= 30:
-                break
+        self.cache_tracks(user, key, tracks)
+        return tracks
+
+    def cache_tracks(self, user, key, tracks):
         if len(self.cache) > 500:
             self.cache = {
                 k: v for k, v in self.cache.items() if v[0] > time.monotonic()
@@ -181,7 +230,7 @@ class Playlists:
             if len(self.cache) > 500:
                 self.cache.pop(next(iter(self.cache)))
         self.cache[(user, key)] = (time.monotonic() + 900, tracks)
-        return tracks
 
     def invalidate(self, user):
-        self.cache.pop((user, "liked"), None)
+        self.cache.pop((user, "explore"), None)
+        self.native_cache = {k: v for k, v in self.native_cache.items() if k[0] != user}

@@ -2,6 +2,16 @@
 
 普通用户建议通过 [README 的 FPK 安装流程](../README.md#安装) 使用扩展。本页面向需要调试接口或自行部署服务的开发者。
 
+## 音乐发现模块
+
+- `fnmusic/history.py`：`playback.db` 按脱敏用户和歌曲保存聚合播放活动；首次读写在同一写事务内导入最近保留的 500 条历史事件中的有效播放。与日志轮转分离，不保存会话凭证或媒体地址。
+- `fnmusic/discovery.py`：`discovery.json` 保存全局 `exploration_mode`（`comfort` / `balanced` / `bold`，默认 `balanced`）。探险按风格及显式相邻风格规则选歌；考古先从共享索引选候选，再调用当前用户的 `Official.find_local` 校验路径，保留官方对象。
+- `fnmusic/versions.py`：只读当前配置目录索引，通过保守版本后缀规则分组，普通括号内容保留；不修改去重下载所用的 `same_recording` 判定。
+- `Playlists` 的 `explore` / `archaeology` 各对应一个用户专属歌单 GUID。探险缓存 15 分钟，考古缓存 5 分钟并包含用户、会话指纹、北京时间日期和索引扫描版本；播放活动触发当前用户缓存失效。管理进程与代理进程通过设置文件共享探险档位。
+- 本地播放不额外请求身份接口；复用最近 5 分钟经过官方接口确认的会话归属。未有曲目信息时保留官方 GUID，考古解析官方对象后按 GUID 再核对历史分类。
+
+管理接口沿用管理员和写请求来源校验：`GET/POST /api/discovery` 读取或保存探险档位，`GET /api/library/versions?q=&page=1&size=25` 查询版本雷达。也支持现有 `/app/fnmusic-lx-first` 前缀；雷达每页最多 100 组。
+
 ## 开发环境
 
 需要 Python 3.11+。LX 服务需要 Node.js 20+；音频校验和部分 App 转码需要 FFmpeg / ffprobe。源码部署还需要正常运行的官方飞牛音乐及可访问的 Unix Socket。
@@ -30,7 +40,7 @@ chmod 600 .env
 | `PLAY_MODE` | `direct`：在线直连优先；`proxy`：NAS 中转。本地匹配优先于在线资源 |
 | `PLAY_QUALITY` | 在线播放的音质起点，默认 `320k`，按源声明尝试可用音质 |
 | `DEFAULT_PLAYLIST_GUID` | 指定当前用户可访问的已有歌单；未指定时查找或创建「默认歌单」 |
-| `HOT_SOURCE` / `HOT_BOARD` | 热门推荐平台及榜单；默认 `kg`，榜单为空时取该平台首个榜单 |
+| `HOT_SOURCE` / `HOT_BOARD` | 热门推荐平台及榜单；默认 `kg,tx` 混合去重；平台以逗号分隔，榜单为空时各取首个榜单；指定榜单时建议使用单个平台 |
 | `PUBLIC_PLAYLISTS` | 公共在线歌单配置，JSON 数组 |
 
 公共歌单示例，ID 需替换为目标平台的真实歌单 ID：

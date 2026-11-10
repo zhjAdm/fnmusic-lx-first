@@ -24,4 +24,4 @@ def test_default_platform_priority_is_kg_then_tx(monkeypatch):
     monkeypatch.setenv('LX_PASSWORD', 'fixture')
     assert Config().platforms == ['kg', 'tx', 'kw', 'wy', 'mg']
     assert Config.from_env().platforms == ['kg', 'tx', 'kw', 'wy', 'mg']
-    assert Config.from_env().hot_source == 'kg'
+    assert Config.from_env().hot_source == 'kg,tx'

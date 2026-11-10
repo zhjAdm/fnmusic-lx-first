@@ -72,6 +72,7 @@ def track_from_raw(raw):
         "album": str(raw.get("albumName") or "未知专辑"),
         "duration": round(duration * 1000),
         "cover": str(raw.get("img") or raw.get("pic") or ""),
+        "style": str(raw.get("recommendation_style") or raw.get("genre") or ""),
         "raw": raw,
     }
 

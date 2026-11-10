@@ -20,6 +20,7 @@ from .library import Library
 from .updates import Updater
 from .self_upgrade import ACTIVE
 from .playlists import Playlists
+from .versions import radar
 from .store import Store
 
 STATIC = Path(__file__).parent / "static"
@@ -129,6 +130,7 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
             "/api/library/scan": "library.scan",
             "/api/library/cancel": "library.cancel",
             "/api/recommendations/refresh": "recommendation.refresh",
+            "/api/discovery": "discovery.save",
         }
         try:
             response = await call_next(request)
@@ -198,7 +200,8 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
     async def state():
         state = await settings.state()
         return JSONResponse(
-            {**state, "app_version": __version__, "recommendations": recommendation_state()},
+            {**state, "app_version": __version__, "recommendations": recommendation_state(),
+             "discovery": app.state.recommendations.discovery.settings()},
             headers={"Cache-Control": "no-store"},
         )
 
@@ -215,6 +218,21 @@ def create_manager(config, env_path, control=None, lx=None, validate_dir=None):
     @router.get("/api/recommendations")
     async def recommendations():
         return JSONResponse(recommendation_state(), headers={"Cache-Control": "no-store"})
+
+    @router.get("/api/discovery")
+    async def discovery_settings():
+        return JSONResponse(app.state.recommendations.discovery.settings(),
+                            headers={"Cache-Control": "no-store"})
+
+    @router.post("/api/discovery")
+    async def save_discovery(request: Request):
+        data = await body(request)
+        return app.state.recommendations.discovery.save_settings(data.get("exploration_mode"))
+
+    @router.get("/api/library/versions")
+    async def library_versions(q: str = "", page: int = 1, size: int = 25):
+        result = await asyncio.to_thread(radar, library, q, page, size)
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
     @router.post("/api/recommendations/refresh")
     async def refresh_recommendations(request: Request):

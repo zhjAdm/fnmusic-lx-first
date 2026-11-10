@@ -11,7 +11,7 @@ from .jobs import Jobs
 from .lx import LX
 from .media import Media
 from .models import to_official
-from .official import Official
+from .official import Official, session_key
 from .playlists import Playlists
 from .store import Store
 from .transcode import Transcode
@@ -28,6 +28,8 @@ def create_app(
     config=None, official_client=None, lx_client=None, media_client=None, *, worker=True
 ):
     config = config or Config.from_env()
+    session_users = {}
+    native_items = {}
 
     @asynccontextmanager
     async def lifespan(app):
@@ -114,8 +116,26 @@ def create_app(
     async def identity(request):
         user = await app.state.official.user(request.headers)
         request.state.music_user = user
+        if len(session_users) >= 500:
+            session_users.pop(next(iter(session_users)))
+        session_users[session_key(request.headers)] = (time.monotonic() + 300, user)
         app.state.jobs.touch(user, request.headers)
         return user
+
+    def known_user(request):
+        cached = session_users.get(session_key(request.headers))
+        return cached[1] if cached and cached[0] > time.monotonic() else None
+
+    async def playlist_rows(request, user, guid):
+        rows = await app.state.playlists.tracks(
+            user, guid, request.headers, app.state.official,
+        )
+        if app.state.playlists.key(user, guid) == "archaeology":
+            if len(native_items) > 3000:
+                native_items.clear()
+            for row in rows:
+                native_items[(user, row["guid"])] = (time.monotonic() + 900, row)
+        return rows
 
     async def forward(request):
         path = request.url.path + ("?" + request.url.query if request.url.query else "")
@@ -289,6 +309,13 @@ def create_app(
         )
 
     def playback_note(name, request, item, user=None, **fields):
+        if user is None:
+            user = known_user(request)
+        if user is not None and name in {
+            "play.redirect", "play.proxy_started", "play.hls_started", "play.local_forwarded",
+            "play.playlist_forwarded",
+        }:
+            app.state.playlists.invalidate(user)
         activity(
             config.data_dir,
             name,
@@ -299,8 +326,14 @@ def create_app(
             **fields,
         )
 
-    def native_track(guid):
-        for expires, rows in search_cache.values():
+    def native_track(guid, request):
+        user = known_user(request)
+        native = native_items.get((user, guid))
+        rows_to_check = []
+        if native and native[0] > time.monotonic():
+            rows_to_check.append((native[0], [native[1]]))
+        rows_to_check.extend(v for k, v in search_cache.items() if user is not None and k[0] == user)
+        for expires, rows in rows_to_check:
             if expires < time.monotonic():
                 continue
             for row in rows:
@@ -333,7 +366,7 @@ def create_app(
         item = track(guid_of(request))
         record = first_play_request(request)
         if not item:
-            item = native_track(guid_of(request))
+            item = native_track(guid_of(request), request)
             try:
                 response = await forward(request)
                 if record and response.status_code < 400:
@@ -444,7 +477,7 @@ def create_app(
                     playback_note(
                         "play.playlist_forwarded",
                         request,
-                        native_track(guid),
+                        native_track(guid, request),
                         mode="official_hls",
                         status=response.status_code,
                     )
@@ -454,7 +487,7 @@ def create_app(
                     playback_note(
                         "play.failed",
                         request,
-                        native_track(guid),
+                        native_track(guid, request),
                         mode="official_hls",
                         level="ERROR",
                         error=exc,
@@ -620,7 +653,7 @@ def create_app(
         )
         if not card:
             return await forward(request)
-        rows = await app.state.playlists.tracks(user, guid)
+        rows = await playlist_rows(request, user, guid)
         return envelope(dict(card, trackCount=len(rows)))
 
     @app.get(PREFIX + "playlist/batch-detail")
@@ -659,12 +692,13 @@ def create_app(
             app.state.playlists.key(user, guid)
         except KeyError:
             return await forward(request)
-        rows = await app.state.playlists.tracks(user, guid)
+        rows = await playlist_rows(request, user, guid)
         page, size = page_args(request, total=len(rows))
         return envelope(
             {
                 "list": [
-                    to_official(t, app.state.store.is_liked(user, t["guid"]))
+                    (t if app.state.playlists.key(user, guid) == "archaeology"
+                     else to_official(t, app.state.store.is_liked(user, t["guid"])))
                     for t in rows[(page - 1) * size : page * size]
                 ],
                 "total": len(rows),

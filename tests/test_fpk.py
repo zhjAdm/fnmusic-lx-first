@@ -157,4 +157,17 @@ def test_upgrade_old_platform_default_but_preserve_custom_configuration(tmp_path
         values = env_values(state / 'worker.env')
         assert values['LX_PLATFORMS'] == expected
         assert values['LX_PASSWORD'] == 'fixture-password-long-enough'
-        assert values['HOT_SOURCE'] == ('kg' if name == 'legacy' else 'kw')
+        assert values['HOT_SOURCE'] == ('kg,tx' if name == 'legacy' else 'kw')
+
+
+def test_upgrade_kg_default_to_mixed_but_keep_custom_board(tmp_path):
+    from scripts.fpk_lifecycle import env_values
+
+    root = tmp_path / "app"
+    root.mkdir()
+    for name, board, expected in [("default", "", "kg,tx"), ("board", "123", "kg")]:
+        state = tmp_path / name
+        state.mkdir()
+        (state / "worker.env").write_text(f"HOT_SOURCE=kg\nHOT_BOARD={board}\n")
+        initialize(root, state)
+        assert env_values(state / "worker.env")["HOT_SOURCE"] == expected

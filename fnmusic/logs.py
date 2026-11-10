@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import traceback
 
 MAX_BYTES = 1024 * 1024
@@ -118,6 +119,13 @@ def safe_route(path):
 def activity(
     data_dir, name, *, user=None, track=None, level="INFO", error=None, **fields
 ):
+    from .history import History, PLAYED
+
+    if user is not None and track and name in PLAYED:
+        try:
+            History(Path(data_dir)).record(user, track)
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            event(data_dir, "history", "persist.failed", level="WARNING", error=exc)
     if user is not None:
         fields["user"] = "user_" + hashlib.sha256(str(user).encode()).hexdigest()[:12]
     if track:
@@ -125,6 +133,7 @@ def activity(
             title=track.get("title", ""),
             artist=track.get("artist", ""),
             source=track.get("source", ""),
+            style=track.get("style", ""),
             task=track.get("guid", ""),
         )
     event(data_dir, "history", name, level=level, error=error, **fields)
@@ -154,6 +163,7 @@ def event(data_dir, component, name, *, level="INFO", error=None, **fields):
             "keyword",
             "title",
             "artist",
+            "style",
             "source",
             "user",
             "mode",

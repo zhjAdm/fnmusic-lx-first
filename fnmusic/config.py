@@ -37,7 +37,7 @@ class Config:
     scan_path: str = ""
     scan_body: dict = field(default_factory=dict)
     public_playlists: list[dict] = field(default_factory=list)
-    hot_source: str = "kg"
+    hot_source: str = "kg,tx"
     hot_board: str = ""
     max_download_bytes: int = 1024 * 1024 * 1024
     session_ttl: int = 3600
@@ -50,6 +50,10 @@ class Config:
             p not in {"kw", "kg", "tx", "wy", "mg"} for p in self.platforms
         ):
             raise ValueError("Unsupported LX platform")
+        if not self.hot_sources or any(
+            p not in {"kw", "kg", "tx", "wy", "mg"} for p in self.hot_sources
+        ):
+            raise ValueError("Unsupported hot recommendation platform")
         if self.scan_path and not self.scan_path.startswith("/music/api/v1/"):
             raise ValueError("Scan path must be an official music API path")
         for row in self.public_playlists:
@@ -76,6 +80,10 @@ class Config:
         ):
             raise ValueError("Listener must not overwrite the official socket")
 
+    @property
+    def hot_sources(self):
+        return list(dict.fromkeys(p.strip() for p in self.hot_source.split(",") if p.strip()))
+
     @classmethod
     def from_env(cls):
         env = os.environ
@@ -94,7 +102,7 @@ class Config:
             scan_path=env.get("SCAN_PATH", ""),
             scan_body=json.loads(env.get("SCAN_BODY", "{}")),
             public_playlists=json.loads(env.get("PUBLIC_PLAYLISTS", "[]")),
-            hot_source=env.get("HOT_SOURCE", "kg"),
+            hot_source=env.get("HOT_SOURCE", "kg,tx"),
             hot_board=env.get("HOT_BOARD", ""),
         )
         if not config.lx_password:

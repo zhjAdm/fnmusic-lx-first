@@ -7,6 +7,49 @@ from fnmusic.app import create_app
 from fnmusic.config import Config
 
 
+def test_archaeology_native_tracks_pagination_playback_and_user_isolation(tmp_path):
+    from fnmusic.history import History
+
+    calls = []
+    native = {"guid": "local-guid", "title": "Local Song", "artists": [{"name": "Singer"}],
+              "album": {"name": "Album"}, "duration": 1000,
+              "audioSpec": {"path": "/vol1/music/a.flac", "format": "flac"}, "isFavorite": True}
+
+    def official(req):
+        calls.append(req.url.path)
+        if req.url.path.endswith('user/me'):
+            return httpx.Response(200, json={'code': 0, 'data': {'guid': req.headers.get('cookie')}})
+        return httpx.Response(200, content=b'local-audio', headers={'content-type': 'audio/flac'})
+
+    app = create_app(Config(data_dir=tmp_path),
+                     httpx.AsyncClient(base_url='http://official', transport=httpx.MockTransport(official)),
+                     httpx.AsyncClient(), httpx.AsyncClient(), worker=False)
+    with TestClient(app) as client:
+        async def archaeology(user, headers, api):
+            assert headers['cookie'] == user
+            return [native] if user == 'a' else []
+
+        app.state.playlists.discovery.archaeology = archaeology
+        guid = app.state.playlists.guid('a', 'archaeology')
+        url = '/music/api/v1/track/playlist-detail/list'
+        response = client.get(url, params={'playlistGUID': guid, 'size': -1}, headers={'cookie': 'a'})
+        assert response.status_code == 200
+        row = response.json()['data']['list'][0]
+        assert row == native
+        assert client.get(url, params={'playlistGUID': guid, 'page': 2, 'size': 1},
+                          headers={'cookie': 'a'}).json()['data']['list'] == []
+        other_guid = app.state.playlists.guid('b', 'archaeology')
+        assert client.get(url, params={'playlistGUID': other_guid},
+                          headers={'cookie': 'b'}).json()['data']['total'] == 0
+        before = len(calls)
+        assert client.get('/music/api/v1/track/stream?guid=local-guid',
+                          headers={'cookie': 'a'}).content == b'local-audio'
+        assert len(calls) == before + 1
+        assert History(tmp_path).songs('a')[0]['title'] == 'Local Song'
+        assert History(tmp_path).songs('b') == []
+        assert app.state.store.jobs('a') == []
+
+
 @pytest.mark.parametrize("size,page,expected", [(-1, 1, 30), (0, 1, 30), (10, 1, 10), (10, 2, 10), (10, 4, 0)])
 @pytest.mark.parametrize("parameter", ["playlistGUID", "playlistGuid"])
 def test_hot_playlist_mobile_all_tracks_and_regular_pagination(tmp_path, size, page, expected, parameter):
@@ -14,7 +57,7 @@ def test_hot_playlist_mobile_all_tracks_and_regular_pagination(tmp_path, size, p
         return httpx.Response(200, json={"code": 0, "data": {"guid": "a"}})
 
     def lx(req):
-        return httpx.Response(200, json=[dict(RAW, songmid=str(i)) for i in range(30)])
+        return httpx.Response(200, json=[dict(RAW, songmid=str(i), name=f"歌曲{i}") for i in range(30)])
 
     app = create_app(
         Config(data_dir=tmp_path, hot_board="test-board"),

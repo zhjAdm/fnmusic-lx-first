@@ -245,3 +245,31 @@ input[type=checkbox] { width: 18px; height: 18px; flex-shrink: 0; accent-color: 
 @media (forced-colors: active) {
   * { scrollbar-color: auto; }
 }
+
+.discovery-panel { margin-top: 24px; }
+.discovery-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.discovery-controls { display: flex; align-items: stretch; gap: 12px; }
+.discovery-controls select { flex: 1; min-width: 0; }
+.discovery-controls button { flex-shrink: 0; margin: 0; }
+.archaeology-note { margin-top: 24px; padding-top: 20px; border-top: 1px solid #e3e5de; }
+.archaeology-note strong { font-size: 14px; }
+.archaeology-note small { display: block; color: #767c71; line-height: 1.8; }
+#versions-search { display: flex; gap: 10px; margin: 22px 0 14px; }
+#versions-search input { flex: 1; min-width: 0; }
+.version-group { border-top: 1px solid #e3e5de; padding: 22px 0 12px; }
+.version-group-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; margin-bottom: 14px; }
+.version-group-heading h3 { font-size: 18px; margin: 0; }
+.version-group-heading span { font-size: 14px; color: #5b6457; }
+.version-group-heading small { margin-left: auto; color: #767c71; }
+.version-row { display: grid; grid-template-columns: 88px minmax(0,1fr); gap: 16px; padding: 12px 0; }
+.version-label { align-self: start; padding: 5px 8px; background: #f1f3ec; border-radius: 4px; font-size: 12px; color: #58634e; overflow-wrap: anywhere; }
+.version-row strong { display: block; font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+.version-row small { display: block; margin-top: 5px; color: #767c71; font-size: 12px; line-height: 1.6; }
+.version-path { overflow-wrap: anywhere; }
+.version-empty { padding: 36px 16px; text-align: center; background: #f7f8f3; border-radius: 6px; line-height: 1.8; }
+@media (max-width: 640px) {
+  .discovery-heading, .discovery-controls { flex-direction: column; }
+  .version-row { grid-template-columns: 68px minmax(0,1fr); gap: 10px; }
+  .version-group-heading small { margin-left: 0; width: 100%; }
+  #versions-search button { flex-shrink: 0; }
+}

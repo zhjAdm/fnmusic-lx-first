@@ -47,6 +47,24 @@ def manager(tmp_path):
     return app, control
 
 
+def test_discovery_settings_and_radar_are_admin_only_and_validate_input(tmp_path):
+    app, _ = manager(tmp_path)
+    with TestClient(app) as client:
+        assert client.get('/api/discovery').status_code == 403
+        assert client.get('/api/library/versions').status_code == 403
+        assert client.get('/api/discovery', headers=ADMIN).json()['exploration_mode'] == 'balanced'
+        assert client.post('/api/discovery', json={'exploration_mode': 'bold'},
+                           headers={'X-Trim-Isadmin': 'true'}).status_code == 403
+        saved = client.post('/api/discovery', json={'exploration_mode': 'bold'}, headers=ADMIN)
+        assert saved.status_code == 200 and saved.json()['exploration_mode'] == 'bold'
+        assert client.get('/api/discovery', headers=ADMIN).json() == saved.json()
+        assert client.post('/api/discovery', json={'exploration_mode': 'bad'}, headers=ADMIN).status_code == 422
+        assert client.post('/api/discovery', json={'exploration_mode': []}, headers=ADMIN).status_code == 422
+        result = client.get('/api/library/versions', headers=ADMIN)
+        assert result.status_code == 200 and result.json()['items'] == []
+        assert client.get('/api/library/versions?page=0', headers=ADMIN).status_code == 422
+
+
 def test_manual_recommendation_refresh_is_admin_only_and_metadata_only(tmp_path):
     from test_core import RAW
 
@@ -74,7 +92,7 @@ def test_manual_recommendation_refresh_is_admin_only_and_metadata_only(tmp_path)
             result = client.post(path, json={}, headers=ADMIN)
             assert result.status_code == 200
             assert result.json()['total'] == 1 and result.json()['updated_at'] > 0
-            assert lx.calls == count
+            assert lx.calls == count * 2
         saved = client.get('/api/recommendations', headers=ADMIN).json()
         lx.broken = True
         assert client.post(path, json={}, headers=ADMIN).status_code == 422

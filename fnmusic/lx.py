@@ -3,8 +3,13 @@
 import asyncio
 import anyio
 from pathlib import Path
+from itertools import zip_longest
+
+import httpx
 
 from .models import quality_order
+from .preferences import style_names
+from .ranking import quality_rank
 
 
 class LX:
@@ -48,6 +53,55 @@ class LX:
             cause = next((item for item in groups if isinstance(item, Exception)), None)
             raise RuntimeError("LX search unavailable") from cause
         return [row for group in successes for row in group][:limit]
+
+    async def styles(self, styles, sources):
+        """Discover other artists through platform genre playlists, ranked locally."""
+        async def one(source):
+            data = await self.call("GET", "/api/music/songList/tags", params={"source": source})
+            if not isinstance(data, dict):
+                raise ValueError("LX style tags protocol mismatch")
+            tags = {}
+            for group in data.get("tags", []):
+                if not isinstance(group, dict):
+                    continue
+                for tag in group.get("list", []):
+                    if isinstance(tag, dict) and tag.get("id") is not None:
+                        for name in style_names(tag.get("name")):
+                            tags.setdefault(name, tag["id"])
+            sorts = data.get("sortList") or []
+            sort = next((row.get("id") for row in sorts
+                         if isinstance(row, dict) and row.get("name") == "最热"), None)
+            if sort is None:
+                sort = sorts[0].get("id") if sorts and isinstance(sorts[0], dict) else "hot"
+            batches = []
+            # Keep calls within a source sequential: the SDK cancels overlapping list requests.
+            for style in styles:
+                if style not in tags:
+                    continue
+                try:
+                    data = await self.call("GET", "/api/music/songList/list", params={
+                        "source": source, "tagId": tags[style], "sortId": sort, "page": 1,
+                    })
+                    lists = data if isinstance(data, list) else data.get("list", [])
+                    lists = sorted((r for r in lists if isinstance(r, dict) and r.get("id")),
+                                   key=quality_rank, reverse=True)[:2]
+                    rows = []
+                    for playlist in lists:
+                        try:
+                            detail = await self.playlist(source, str(playlist["id"]))
+                            rows.extend(dict(row, source=row.get("source") or source,
+                                             recommendation_style=style)
+                                        for row in detail["list"] if isinstance(row, dict))
+                        except (httpx.HTTPError, ValueError):
+                            continue
+                    batches.append(sorted(rows, key=quality_rank, reverse=True))
+                except (httpx.HTTPError, ValueError):
+                    continue
+            return [r for batch in zip_longest(*batches) for r in batch if r is not None]
+
+        groups = await asyncio.gather(*(one(source) for source in sources), return_exceptions=True)
+        groups = [group for group in groups if isinstance(group, list)]
+        return [r for batch in zip_longest(*groups) for r in batch if r is not None]
 
     async def resolve(self, raw, quality):
         data = await self.call(
