@@ -2,7 +2,7 @@
 
 为官方飞牛音乐 Web 和手机 App 接入用户自有的 LX 在线音源，提供本地优先播放、每日热门推荐，以及喜欢后下载、整理入库和加入默认歌单的流程。
 
-本项目是社区扩展，非飞牛官方应用。源码当前版本为 **0.1.24**；可下载安装的版本及变更说明以 [Releases](https://github.com/zhjAdm/fnmusic-lx-first/releases) 为准。
+本项目是社区扩展，非飞牛官方应用。源码当前版本为 **0.1.25**；可下载安装的版本及变更说明以 [Releases](https://github.com/zhjAdm/fnmusic-lx-first/releases) 为准。
 
 [下载安装包](https://github.com/zhjAdm/fnmusic-lx-first/releases/latest) · [反馈问题](https://github.com/zhjAdm/fnmusic-lx-first/issues) · [开发与部署](docs/development.md) · [构建说明](docs/github-build.md)
 
