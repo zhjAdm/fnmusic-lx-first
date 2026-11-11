@@ -151,11 +151,14 @@ class Discovery:
                 last_by_guid[row["guid"]] = max(last_by_guid.get(row["guid"], 0), row["last_at"])
         semaphore = asyncio.Semaphore(4)
         results = {}
+        checked = 0
 
         async def resolve(i, row):
+            nonlocal checked
             async with semaphore:
                 try:
                     native = await official.find_local(row, headers, path=row["path"])
+                    checked += 1
                     if native and native.get("guid"):
                         reason = row["reason"]
                         # Native playback can be observed before any metadata lookup.
@@ -179,6 +182,8 @@ class Discovery:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+        if not results and checked < len(candidates):
+            raise ValueError("飞牛曲库查询未完成")
         seen, rows = set(), []
         for i in sorted(results):
             row = results[i]

@@ -79,7 +79,8 @@ async def test_exploration_modes_exclude_existing_and_change_new_style_ratio(tmp
 
 
 @pytest.mark.asyncio
-async def test_exploration_cold_start_fallback_and_live_setting_change(tmp_path):
+async def test_exploration_refreshes_next_day_and_survives_restart(tmp_path, monkeypatch):
+    import fnmusic.playlists as module
     from fnmusic.playlists import Playlists
     from fnmusic.store import Store
     from test_core import RAW
@@ -96,19 +97,80 @@ async def test_exploration_cold_start_fallback_and_live_setting_change(tmp_path)
                          recommendation_style=s) for s in styles for i in range(35)]
 
     store = Store(tmp_path / 'state.db')
+    day = ['2026-11-10']
+    monkeypatch.setattr(module, 'day_now', lambda: day[0])
     playlists = Playlists(store, LX(), Config(data_dir=tmp_path))
     guid = playlists.guid('a', 'explore')
     cold = await playlists.tracks('a', guid)
     assert len(cold) == 1 and cold[0]['title'] == 'Hot'
     activity(tmp_path, 'play.redirect', user='a', track={'title': 'Heard', 'artist': 'S', 'style': 'Rock'})
-    playlists.invalidate('a')
+    assert await playlists.tracks('a', guid) == cold
+    day[0] = '2026-11-11'
     balanced = await playlists.tracks('a', guid)
     playlists.discovery.save_settings('bold')
+    store.close()
+    store = Store(tmp_path / 'state.db')
+    playlists = Playlists(store, LX(), Config(data_dir=tmp_path))
+    assert await playlists.tracks('a', guid) == balanced
+    assert playlists.discovery.lx.calls == 0
+    day[0] = '2026-11-12'
     bold = await playlists.tracks('a', guid)
     assert sum(r['style'] != '摇滚' for r in bold) > sum(r['style'] != '摇滚' for r in balanced)
-    assert playlists.discovery.lx.calls == 2
+    assert playlists.discovery.lx.calls == 1
     assert await playlists.tracks('a', guid) == bold
     assert store.jobs('a') == []
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_background_archaeology_refresh_preserves_last_success_and_retries(tmp_path, monkeypatch):
+    import fnmusic.playlists as module
+    from fnmusic.playlists import Playlists
+    from fnmusic.store import Store
+
+    day = ['2026-11-10']
+    now = [1000]
+    monkeypatch.setattr(module, 'day_now', lambda: day[0])
+    monkeypatch.setattr(module.time, 'monotonic', lambda: now[0])
+    store = Store(tmp_path / 'state.db')
+    playlists = Playlists(store, None, Config(data_dir=tmp_path))
+    calls = []
+    fail = False
+
+    class Official:
+        async def user(self, headers):
+            return headers['cookie']
+
+    async def explore(user, hot):
+        return []
+
+    async def archaeology(user, headers, official):
+        calls.append(user)
+        if fail:
+            raise ValueError('offline')
+        return [{'guid': day[0]}]
+
+    playlists.discovery.explore = explore
+    playlists.discovery.archaeology = archaeology
+    official = Official()
+    headers = {'cookie': 'a'}
+    sessions = {'a': (2000, headers), 'expired': (999, {'cookie': 'expired'}),
+                'wrong-user': (2000, headers)}
+    guid = playlists.guid('a', 'archaeology')
+    await playlists.refresh_active_discovery(sessions, official)
+    assert next(card for card in playlists.cards('a') if card['guid'] == guid)['trackCount'] == 1
+    assert await playlists.tracks('a', guid, headers, official) == [{'guid': '2026-11-10'}]
+    assert calls == ['a']
+    day[0] = '2026-11-11'
+    fail = True
+    await playlists.refresh_active_discovery(sessions, official)
+    assert await playlists.tracks('a', guid, headers, official) == [{'guid': '2026-11-10'}]
+    assert calls == ['a', 'a']
+    fail = False
+    now[0] += 301
+    await playlists.refresh_active_discovery(sessions, official)
+    assert await playlists.tracks('a', guid, headers, official) == [{'guid': '2026-11-11'}]
+    assert calls == ['a', 'a', 'a']
     store.close()
 
 

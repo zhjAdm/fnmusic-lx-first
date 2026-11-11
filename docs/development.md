@@ -7,7 +7,7 @@
 - `fnmusic/history.py`：`playback.db` 按脱敏用户和歌曲保存聚合播放活动；首次读写在同一写事务内导入最近保留的 500 条历史事件中的有效播放。与日志轮转分离，不保存会话凭证或媒体地址。
 - `fnmusic/discovery.py`：`discovery.json` 保存全局 `exploration_mode`（`comfort` / `balanced` / `bold`，默认 `balanced`）。探险按风格及显式相邻风格规则选歌；考古先从共享索引选候选，再调用当前用户的 `Official.find_local` 校验路径，保留官方对象。
 - `fnmusic/versions.py`：只读当前配置目录索引，通过保守版本后缀规则分组，普通括号内容保留；不修改去重下载所用的 `same_recording` 判定。
-- `Playlists` 的 `explore` / `archaeology` 各对应一个用户专属歌单 GUID。探险缓存 15 分钟，考古缓存 5 分钟并包含用户、会话指纹、北京时间日期和索引扫描版本；播放活动触发当前用户缓存失效。管理进程与代理进程通过设置文件共享探险档位。
+- `Playlists` 的 `explore` / `archaeology` 各对应一个用户专属歌单 GUID。两个歌单按用户 GUID 和北京时间日期保存每日结果。后台复用内存中的有效飞牛会话并重新确认身份，列表和详情可以补生成。刷新失败保留上次成功结果，5 分钟后可重试。管理进程与代理进程通过设置文件共享探险档位。
 - 本地播放不额外请求身份接口；复用最近 5 分钟经过官方接口确认的会话归属。未有曲目信息时保留官方 GUID，考古解析官方对象后按 GUID 再核对历史分类。
 
 管理接口沿用管理员和写请求来源校验：`GET/POST /api/discovery` 读取或保存探险档位，`GET /api/library/versions?q=&page=1&size=25` 查询版本雷达。也支持现有 `/app/fnmusic-lx-first` 前缀；雷达每页最多 100 组。

@@ -7,6 +7,49 @@ from fnmusic.app import create_app
 from fnmusic.config import Config
 
 
+def test_discovery_playlist_cards_show_track_counts_before_opening_details(tmp_path):
+    def official(req):
+        data = {'guid': 'a'} if req.url.path.endswith('user/me') else {'list': [], 'total': 0}
+        return httpx.Response(200, json={'code': 0, 'data': data})
+
+    app = create_app(
+        Config(data_dir=tmp_path),
+        httpx.AsyncClient(base_url='http://official', transport=httpx.MockTransport(official)),
+        httpx.AsyncClient(), httpx.AsyncClient(), worker=False,
+    )
+    with TestClient(app) as client:
+        playlists = app.state.playlists
+        headers = {'cookie': 'valid'}
+        calls = []
+
+        async def explore(user, hot):
+            calls.append('explore')
+            return [app.state.store.save_track(RAW)]
+
+        async def archaeology(user, headers, api):
+            calls.append('archaeology')
+            return [{'guid': 'native-1'}, {'guid': 'native-2'}]
+
+        playlists.discovery.explore = explore
+        playlists.discovery.archaeology = archaeology
+        expected = {playlists.guid('a', 'explore'): 1, playlists.guid('a', 'archaeology'): 2}
+        batch = client.get('/music/api/v1/playlist/batch-detail',
+                           params={'guids': ','.join(expected)}, headers=headers)
+        assert batch.status_code == 200
+        assert {card['guid']: card['trackCount'] for card in batch.json()['data']['list']} == expected
+        listing = client.get('/music/api/v1/playlist/list', headers=headers)
+        assert listing.status_code == 200
+        cards = listing.json()['data']['list']
+        assert {card['guid']: card['trackCount'] for card in cards if card['guid'] in expected} == expected
+        for guid, count in expected.items():
+            detail = client.get('/music/api/v1/track/playlist-detail/list',
+                                params={'playlistGUID': guid}, headers=headers)
+            assert detail.status_code == 200
+            assert detail.json()['data']['total'] == count
+        assert calls.count('explore') == calls.count('archaeology') == 1
+        assert app.state.store.jobs('a') == []
+
+
 @pytest.mark.parametrize('configured', ['', 'custom-target'])
 @pytest.mark.parametrize('batch_shape', ['list', 'object'])
 def test_official_default_playlist_cover_in_list_detail_and_batch(tmp_path, configured, batch_shape):

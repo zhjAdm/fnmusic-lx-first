@@ -3,15 +3,15 @@ import hashlib
 import time
 from datetime import datetime, timedelta, timezone
 from itertools import zip_longest
+from weakref import WeakValueDictionary
 
 from .logs import event
 from .models import normalize
 from .discovery import Discovery, day_now
-from .library import Library
-from .official import session_key
 from .images import playlist_cover_id
 
 BEIJING = timezone(timedelta(hours=8))
+DISCOVERY_KINDS = ("explore", "archaeology")
 
 
 class Playlists:
@@ -19,8 +19,8 @@ class Playlists:
         self.store, self.lx, self.config = store, lx, config
         self.cache = {}
         self.discovery = Discovery(config, store, lx)
-        self.explore_modes = {}
-        self.native_cache = {}
+        self.discovery_locks = WeakValueDictionary()
+        self.discovery_retry = {}
         self.hot_lock = asyncio.Lock()
         self.hot_retry_at = 0
         self.task = None
@@ -31,8 +31,8 @@ class Playlists:
             repr((self.config.hot_source, self.config.hot_board)).encode()
         ).hexdigest()
 
-    def start(self):
-        self.task = asyncio.create_task(self.loop())
+    def start(self, jobs=None, official=None):
+        self.task = asyncio.create_task(self.loop(jobs, official))
 
     async def stop(self):
         if self.task:
@@ -43,14 +43,79 @@ class Playlists:
                 pass
             self.task = None
 
-    async def loop(self):
+    async def loop(self, jobs=None, official=None):
         while True:
             try:
                 await self.refresh_hot()
             except Exception:
                 # refresh_hot records the failure and applies a retry cooldown.
                 pass
+            if jobs is not None and official is not None:
+                try:
+                    await self.refresh_active_discovery(jobs.sessions, official)
+                except Exception as exc:
+                    event(self.config.data_dir, "proxy", "playlist.refresh_failed",
+                          level="WARNING", error=exc)
             await asyncio.sleep(60)
+
+    def discovery_key(self, user, kind):
+        return "discovery:" + self.guid(user, kind)
+
+    def discovery_due(self, key, day, snapshot):
+        return (snapshot is None or snapshot["day"] != day) and (
+            self.discovery_retry.get((key, day), 0) <= time.monotonic()
+        )
+
+    async def refresh_active_discovery(self, sessions, official):
+        for user, (expiry, headers) in list(sessions.items()):
+            if expiry <= time.monotonic():
+                continue
+            day = day_now()
+            due = []
+            for kind in DISCOVERY_KINDS:
+                key = self.discovery_key(user, kind)
+                if self.discovery_due(key, day, self.store.playlist_snapshot(key)):
+                    due.append(kind)
+            if not due:
+                continue
+            try:
+                if await official.user(headers) != user:
+                    continue
+            except Exception:
+                # Official.user handles identity failures. Wait for a valid session.
+                continue
+            await asyncio.gather(
+                *(self.refresh_discovery(user, kind, headers, official) for kind in due),
+                return_exceptions=True,
+            )
+
+    async def refresh_discovery(self, user, kind, headers, official):
+        key = self.discovery_key(user, kind)
+        async with self.discovery_locks.setdefault(key, asyncio.Lock()):
+            day = day_now()
+            snapshot = self.store.playlist_snapshot(key)
+            if not self.discovery_due(key, day, snapshot):
+                if snapshot is not None:
+                    return snapshot["tracks"]
+                raise ValueError("发现歌单暂不可用，请稍后重试")
+            try:
+                if kind == "explore":
+                    generate = self.discovery.explore(user, self.refresh_hot)
+                else:
+                    generate = self.discovery.archaeology(user, headers, official)
+                rows = await asyncio.wait_for(generate, timeout=20)
+                self.store.save_playlist_snapshot(key, day, time.time(), rows)
+                return rows
+            except Exception as exc:
+                now = time.monotonic()
+                self.discovery_retry = {k: until for k, until in self.discovery_retry.items()
+                                        if until > now and k[1] == day}
+                self.discovery_retry[key, day] = now + 300
+                event(self.config.data_dir, "proxy", "playlist.refresh_failed",
+                      level="WARNING", task=key, error=exc)
+                if snapshot is not None:
+                    return snapshot["tracks"]
+                raise ValueError("发现歌单暂不可用，请稍后重试") from exc
 
     async def refresh_hot(self, *, force=False):
         """Daily shared metadata snapshot; never enqueues favorites or downloads."""
@@ -131,18 +196,20 @@ class Playlists:
         ]
 
     def cards(self, user):
-        hot = self.store.playlist_snapshot(self.hot_key)
+        snapshots = {kind: self.store.playlist_snapshot(self.discovery_key(user, kind))
+                     for kind in DISCOVERY_KINDS}
+        snapshots["hot"] = self.store.playlist_snapshot(self.hot_key)
         return [
             {
                 "guid": self.guid(user, key),
                 "name": name,
                 "coverId": playlist_cover_id(key),
                 "trackCount": (
-                    len(hot["tracks"]) if key == "hot" and hot
+                    len(snapshots[key]["tracks"]) if snapshots.get(key) is not None
                     else len(self.cache.get((user, key), (0, []))[1])
                 ),
                 "createdAt": 0,
-                "updatedAt": hot["updated_at"] if key == "hot" and hot else 0,
+                "updatedAt": snapshots[key]["updated_at"] if snapshots.get(key) is not None else 0,
                 "description": (
                     "每日更新热门推荐，仅刷新歌曲信息，不自动下载" if key == "hot"
                     else "熟悉风格与新风格混合，探险程度可在扩展管理页设置" if key == "explore"
@@ -182,34 +249,13 @@ class Playlists:
         key = self.key(user, guid)
         if key == "hot":
             return await self.refresh_hot()
-        if key == "archaeology":
-            if headers is None or official is None:
+        if key in DISCOVERY_KINDS:
+            if key == "archaeology" and (headers is None or official is None):
                 raise ValueError("曲库考古需要当前用户的飞牛音乐会话")
-            library = Library(self.config)
-            revision = repr((library.read(), library.report().get("finished_at")))
-            cache_key = (user, session_key(headers), day_now(), revision)
-            cached = self.native_cache.get(cache_key)
-            if cached and cached[0] > time.monotonic():
-                return cached[1]
-            rows = await self.discovery.archaeology(user, headers, official)
-            if len(self.native_cache) >= 100:
-                self.native_cache.pop(next(iter(self.native_cache)))
-            self.native_cache[cache_key] = (time.monotonic() + 300, rows)
-            return rows
-        if key == "explore":
-            mode = self.discovery.settings()["exploration_mode"]
-            if self.explore_modes.get(user) != mode:
-                self.cache.pop((user, key), None)
-            if user not in self.explore_modes and len(self.explore_modes) >= 500:
-                self.explore_modes.pop(next(iter(self.explore_modes)))
-            self.explore_modes[user] = mode
+            return await self.refresh_discovery(user, key, headers, official)
         cached = self.cache.get((user, key))
         if cached and cached[0] > time.monotonic():
             return cached[1]
-        if key == "explore":
-            tracks = await self.discovery.explore(user, self.refresh_hot)
-            self.cache_tracks(user, key, tracks)
-            return tracks
         entry = self.config.public_playlists[int(key.split(":")[1])]
         raws = []
         # Bounded pagination; fail rather than claim an incomplete imported list.
@@ -250,7 +296,3 @@ class Playlists:
             if len(self.cache) > 500:
                 self.cache.pop(next(iter(self.cache)))
         self.cache[(user, key)] = (time.monotonic() + 900, tracks)
-
-    def invalidate(self, user):
-        self.cache.pop((user, "explore"), None)
-        self.native_cache = {k: v for k, v in self.native_cache.items() if k[0] != user}

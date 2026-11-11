@@ -1,3 +1,4 @@
+import asyncio
 import time
 from contextlib import asynccontextmanager
 
@@ -12,7 +13,7 @@ from .lx import LX
 from .media import Media
 from .models import to_official
 from .official import Official, session_key
-from .playlists import Playlists
+from .playlists import DISCOVERY_KINDS, Playlists
 from .store import Store
 from .transcode import Transcode
 from .logs import event, activity, safe_route
@@ -60,7 +61,7 @@ def create_app(
         app.state.jobs = jobs
         if worker:
             jobs.start()
-            app.state.playlists.start()
+            app.state.playlists.start(jobs, official)
         event(config.data_dir, "proxy", "service.started")
         try:
             yield
@@ -137,6 +138,24 @@ def create_app(
             for row in rows:
                 native_items[(user, row["guid"])] = (time.monotonic() + 900, row)
         return rows
+
+    async def discovery_card_counts(request, user, cards):
+        playlists = app.state.playlists
+        discovery_guids = {playlists.guid(user, kind) for kind in DISCOVERY_KINDS}
+
+        async def with_count(card):
+            guid = card["guid"]
+            if guid not in discovery_guids:
+                return card
+            try:
+                rows = await playlists.tracks(
+                    user, guid, request.headers, app.state.official,
+                )
+            except ValueError:
+                return card
+            return dict(card, trackCount=len(rows))
+
+        return await asyncio.gather(*(with_count(card) for card in cards))
 
     async def forward(request):
         path = request.url.path + ("?" + request.url.query if request.url.query else "")
@@ -312,11 +331,6 @@ def create_app(
     def playback_note(name, request, item, user=None, **fields):
         if user is None:
             user = known_user(request)
-        if user is not None and name in {
-            "play.redirect", "play.proxy_started", "play.hls_started", "play.local_forwarded",
-            "play.playlist_forwarded",
-        }:
-            app.state.playlists.invalidate(user)
         activity(
             config.data_dir,
             name,
@@ -580,7 +594,6 @@ def create_app(
             return await forward(request)
         user = await identity(request)
         app.state.store.like(user, guid)
-        app.state.playlists.invalidate(user)
         return envelope(None)
 
     @app.post(PREFIX + "favorite-track/delete")
@@ -603,11 +616,9 @@ def create_app(
             )
             for job in bound:
                 app.state.store.unlike(user, job["guid"])
-            app.state.playlists.invalidate(user)
             return envelope(None)
         job = next((j for j in app.state.store.jobs(user) if j["guid"] == guid), None)
         app.state.store.unlike(user, guid)
-        app.state.playlists.invalidate(user)
         if job and job["official_guid"]:
             await app.state.official.api(
                 "POST",
@@ -646,9 +657,8 @@ def create_app(
         )
         data = data or {"list": [], "total": 0}
         rows = app.state.playlists.cards(user) + app.state.playlists.official_covers(data.get("list", []))
-        return envelope(
-            dict(data, list=rows[(page - 1) * size : page * size], total=len(rows))
-        )
+        cards = await discovery_card_counts(request, user, rows[(page - 1) * size : page * size])
+        return envelope(dict(data, list=cards, total=len(rows)))
 
     @app.get(PREFIX + "playlist/detail")
     async def playlist_detail(request: Request):
@@ -693,6 +703,7 @@ def create_app(
             )
             data = app.state.playlists.official_covers(data)
             official = data if isinstance(data, list) else (data or {}).get("list", [])
+        online = await discovery_card_counts(request, user, online)
         return envelope({"list": online + official})
 
     @app.get(PREFIX + "track/playlist-detail/list")
