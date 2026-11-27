@@ -2,7 +2,13 @@
 
 工作流：`.github/workflows/build-fpk.yml`，名称 **Build fnOS FPK**。
 
-该工作流只接受手动 `workflow_dispatch`；普通提交、推送或标签不会自动构建，手动构建时可勾选发布到 Release；普通push或tag不触发。无需添加音源密钥或个人访问令牌到 Actions Secrets。
+无需添加音源密钥或个人访问令牌到 Actions Secrets。
+
+## 版本变动自动构建
+
+更新 `fnmusic/__init__.py` 中的 `__version__` 并推送到 `main`，或合并包含版本变动的 PR。工作流比较本次推送前后的版本值，确认变动后执行测试、双架构打包和校验，并将 FPK 和 SHA256 上传到该次 Actions 运行的 **Artifacts**。
+
+只修改版本文件的注释会跳过打包。发布到 Releases 可通过手动构建，或使用下文的 **Publish existing FPK** 发布已构建的产物。
 
 ## 手动构建
 
@@ -40,7 +46,7 @@ python -m scripts.verify_fpk dist/*.fpk
 
 版本回归检查：`python -m pytest tests/test_updates.py::test_release_versions_are_numeric_and_match_package_metadata tests/test_fpk_builder.py tests/test_manager.py::test_page_versions_follow_running_version_without_editing_template -q`。测试会使用模拟的新版本检查清单、桌面入口、页面页脚及资源参数，并确认 FPK 包内源码保持原样，兼容现有源码完整性校验。
 
-官方参考：[手动触发工作流](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)、[下载构建产物](https://docs.github.com/en/actions/managing-workflow-runs-and-deployments/managing-workflow-runs/downloading-workflow-artifacts)、[upload-artifact](https://github.com/actions/upload-artifact)。
+官方参考：[触发工作流](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)、[手动触发工作流](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)、[下载构建产物](https://docs.github.com/en/actions/managing-workflow-runs-and-deployments/managing-workflow-runs/downloading-workflow-artifacts)、[upload-artifact](https://github.com/actions/upload-artifact)。
 
 ## 发布已有构建
 
@@ -50,4 +56,4 @@ python -m scripts.verify_fpk dist/*.fpk
 
 0.1.9源码增加管理页软件更新入口；下载并校验后仍由用户到应用中心手动升级。0.1.9已由用户手动构建并发布，安装后可使用软件内更新入口。
 
-工作流依赖的官方Actions已升级到使用Node24的稳定版本，并固定提交SHA。`setup-node`中的`node-version: 22`是LX测试所用运行时；安装包Node版本由assets.lock.json固定，与Actions宿主的Node24是不同层级。普通推送仍不会触发打包。
+工作流依赖的官方Actions已升级到使用Node24的稳定版本，并固定提交SHA。`setup-node`中的`node-version: 22`是LX测试所用运行时；安装包Node版本由assets.lock.json固定，与Actions宿主的Node24是不同层级。

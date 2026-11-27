@@ -165,9 +165,9 @@ FPK 自带 Linux Python、Node.js 和 LX 服务，无需在 NAS 上另行安装�
 ## 开发与构建
 
 - [本地开发与源码部署](docs/development.md)：环境准备、配置项、服务部署与任务检查。
-- [GitHub Actions 构建](docs/github-build.md)：手动构建双架构 FPK、校验及发布。
+- [GitHub Actions 构建](docs/github-build.md)支持版本变动时自动打包双架构 FPK，并支持手动发布。
 
-普通代码推送不会自动打包。下载和源码版本可能不同，请以 Release 说明及对应版本标签为准。自动化测试覆盖本地协议与流程，不能替代真实 NAS、官方 Web / App 及具体音源的兼容性验证。
+下载和源码版本可能不同，请以 Release 说明及对应版本标签为准。自动化测试覆盖本地协议与流程，不能替代真实 NAS、官方 Web / App 及具体音源的兼容性验证。
 
 欢迎通过 Issue 报告问题，或提交范围明确、附有验证说明的 Pull Request。涉及兼容性问题时请注明系统、音乐应用和客户端版本。
 

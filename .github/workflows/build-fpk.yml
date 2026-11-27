@@ -1,7 +1,10 @@
 name: Build fnOS FPK
 
-# Packaging/publication is explicitly requested; pushes never create packages or releases.
 on:
+  push:
+    branches: [main]
+    paths:
+      - fnmusic/__init__.py
   workflow_dispatch:
     inputs:
       publish:
@@ -14,11 +17,53 @@ permissions:
   contents: read
 
 concurrency:
-  group: fpk-${{ github.ref }}
+  group: fpk-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: false
 
 jobs:
+  check-version:
+    if: github.event_name == 'push' && !github.event.deleted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out the version before the push
+        if: ${{ !github.event.created }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.before }}
+          path: version-before
+          persist-credentials: false
+      - name: Compare application versions
+        id: compare
+        shell: bash
+        env:
+          BRANCH_CREATED: ${{ github.event.created }}
+        run: |
+          current=$(python3 -c 'from fnmusic import __version__; print(__version__)')
+          previous=
+          if [[ "$BRANCH_CREATED" != true ]]; then
+            previous=$(cd version-before && python3 -c 'from fnmusic import __version__; print(__version__)')
+          fi
+          if [[ "$current" == "$previous" ]]; then
+            echo "Version $current is unchanged."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Version changed from ${previous:-none} to $current."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: check-version
+    if: >-
+      ${{ !cancelled() && (
+        github.event_name == 'workflow_dispatch' ||
+        (needs.check-version.result == 'success' && needs.check-version.outputs.changed == 'true')
+      ) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -72,7 +117,7 @@ jobs:
 
   release:
     needs: build
-    if: inputs.publish
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
