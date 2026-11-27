@@ -149,12 +149,17 @@ class Media:
                 raise HTTPException(409, "播放资源已过期，请重新播放")
             target = binding[1]
             if "local" in target:
-                return await self.official.stream(
+                result = await self.official.stream(
                     target["local"], headers, range_header, head
                 )
-            return await self.deliver(
+                result.fnmusic_mode = "local"
+                return result
+            result = await self.deliver(
                 target, range_header, head, force_proxy=force_proxy
             )
+            result.fnmusic_mode = "direct" if result.status_code == 302 else "proxy"
+            result.fnmusic_quality = target.get("fnmusic_quality", "")
+            return result
         last_error = None
         if self.official:
             try:
@@ -194,7 +199,7 @@ class Media:
                     result = await self.deliver(
                         target, range_header, head, force_proxy=force_proxy
                     )
-                    self.remember(user, track["guid"], target)
+                    self.remember(user, track["guid"], {**target, "fnmusic_quality": quality})
                     result.fnmusic_mode = (
                         "direct" if result.status_code == 302 else "proxy"
                     )

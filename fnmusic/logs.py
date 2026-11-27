@@ -172,6 +172,13 @@ def event(data_dir, component, name, *, level="INFO", error=None, **fields):
             "page",
             "cache_hit",
             "duration_ms",
+            "startup_ms",
+            "request_id",
+            "range",
+            "content_range",
+            "bytes_sent",
+            "expected_bytes",
+            "exit_code",
             "route",
             "method",
         }

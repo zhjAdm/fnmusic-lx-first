@@ -10,12 +10,14 @@ from starlette.responses import StreamingResponse
 from .streams import ClosingStream
 from .tools import MediaTools, MissingTool
 from .config import Config
+from .logs import event
 
 
 class Transcode:
     def __init__(self, media, config=None):
         self.media = media
-        self.tools = MediaTools(config or Config())
+        self.config = config or Config()
+        self.tools = MediaTools(self.config)
         self.slots = asyncio.Semaphore(2)
         self.cleanups = set()
 
@@ -33,7 +35,7 @@ class Transcode:
         for cleanup in list(self.cleanups):
             await cleanup()
 
-    async def audio(self, track, user, headers):
+    async def audio(self, track, user, headers, *, request_id=""):
         try:
             executable = await self.tools.require("ffmpeg")
         except MissingTool as exc:
@@ -44,6 +46,7 @@ class Transcode:
             raise HTTPException(503, "转码繁忙，请稍后重试") from None
         process = None
         feed = None
+        diagnostics = None
         source = None
         cleanup_task = None
 
@@ -54,12 +57,21 @@ class Transcode:
                     await asyncio.gather(feed, return_exceptions=True)
                 try:
                     if process:
-                        if process.returncode is None:
+                        forced = process.returncode is None
+                        if forced:
                             try:
                                 process.kill()
                             except ProcessLookupError:
-                                pass
-                        await process.wait()
+                                forced = False
+                        exit_code = await process.wait()
+                        if diagnostics:
+                            reason = await diagnostics
+                            if not forced and exit_code:
+                                event(
+                                    self.config.data_dir, "proxy", "play.ffmpeg_failed",
+                                    level="ERROR", mode="hls", task=track["guid"],
+                                    exit_code=exit_code, code=reason, request_id=request_id,
+                                )
                 finally:
                     if source:
                         if hasattr(source, "aclose"):
@@ -106,8 +118,25 @@ class Transcode:
                 "pipe:1",
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
             )
+
+            async def read_diagnostics():
+                tail = b""
+                while block := await process.stderr.read(4096):
+                    tail = (tail + block)[-8192:]
+                # Classify known messages without retaining FFmpeg's raw text.
+                tail = tail.lower()
+                for marker, code in (
+                    (b"invalid data", "invalid_input"),
+                    (b"error while decoding", "decode_failed"),
+                    (b"error opening input", "input_open_failed"),
+                    (b"error while opening encoder", "encoder_failed"),
+                    (b"broken pipe", "broken_pipe"),
+                ):
+                    if marker in tail:
+                        return code
+                return "other" if tail else "no_stderr"
 
             async def pump():
                 try:
@@ -117,9 +146,11 @@ class Transcode:
                 finally:
                     process.stdin.close()
 
+            diagnostics = asyncio.create_task(read_diagnostics())
             feed = asyncio.create_task(pump())
             first = await asyncio.wait_for(process.stdout.read(16384), 30)
             if not first:
+                await asyncio.wait_for(process.wait(), 5)
                 raise ValueError("AAC conversion failed")
 
             async def body():

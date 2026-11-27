@@ -1,6 +1,8 @@
 import asyncio
+import re
 import time
 from contextlib import asynccontextmanager
+from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -15,6 +17,7 @@ from .models import to_official
 from .official import Official, session_key
 from .playlists import DISCOVERY_KINDS, Playlists
 from .store import Store
+from .streams import ClosingStream
 from .transcode import Transcode
 from .logs import event, activity, safe_route
 from .images import image_response, playlist_cover_path
@@ -338,8 +341,57 @@ def create_app(
             track=item,
             route=safe_route(request.url.path),
             method=request.method,
+            **delivery_context(request),
             **fields,
         )
+
+    def delivery_context(request):
+        if not hasattr(request.state, "play_request_id"):
+            request.state.play_request_id = uuid4().hex
+        interval = request.headers.get("range", "")
+        if interval and not re.fullmatch(r"bytes=(?:[0-9]{1,20}-[0-9]{0,20}|-[0-9]{1,20})", interval):
+            interval = "other"
+        return {"request_id": request.state.play_request_id, "range": interval}
+
+    def observe_delivery(request, response, item, mode, started):
+        if request.method != "GET" or not isinstance(response, ClosingStream):
+            return
+        context = delivery_context(request)
+        headers = response.headers
+        length = headers.get("content-length", "")
+        content_range = headers.get("content-range", "")
+        fields = {
+            "expected_bytes": int(length) if re.fullmatch(r"[0-9]{1,20}", length) else -1,
+            "content_range": content_range
+            if re.fullmatch(r"bytes [0-9]{1,20}-[0-9]{1,20}/(?:[0-9]{1,20}|\*)", content_range)
+            else "",
+        }
+
+        def report(state, error, **metrics):
+            level = "INFO"
+            if state in {"source_error", "send_error"}:
+                level = "ERROR"
+            elif state == "incomplete":
+                level = "WARNING"
+            event(
+                config.data_dir, "proxy", "play.delivery",
+                level=level,
+                error=error,
+                state=state,
+                mode=mode,
+                status=response.status_code,
+                task=item["guid"],
+                title=item["title"],
+                source=item.get("source", ""),
+                quality=getattr(response, "fnmusic_quality", ""),
+                startup_ms=round((ready - started) * 1000),
+                **context,
+                **fields,
+                **metrics,
+            )
+
+        ready = time.monotonic()
+        response.delivery_report = report
 
     def native_track(guid, request):
         user = known_user(request)
@@ -378,12 +430,14 @@ def create_app(
     @app.api_route(PREFIX + "track/stream", methods=["GET", "HEAD"])
     @app.api_route(PREFIX + "track/stream/{subpath:path}", methods=["GET", "HEAD"])
     async def stream(request: Request):
+        started = time.monotonic()
         item = track(guid_of(request))
         record = first_play_request(request)
         if not item:
             item = native_track(guid_of(request), request)
             try:
                 response = await forward(request)
+                observe_delivery(request, response, item, "official", started)
                 if record and response.status_code < 400:
                     playback_note(
                         "play.local_forwarded",
@@ -394,7 +448,7 @@ def create_app(
                     )
                 return response
             except Exception as exc:
-                if record:
+                if request.method == "GET":
                     playback_note(
                         "play.failed",
                         request,
@@ -407,7 +461,6 @@ def create_app(
         user = await identity(request)
         if record:
             playback_note("play.requested", request, item, user, mode=config.play_mode)
-        started = time.monotonic()
         try:
             response = await app.state.media.play(
                 item,
@@ -416,8 +469,9 @@ def create_app(
                 request.headers.get("range"),
                 request.method == "HEAD",
             )
+            mode = getattr(response, "fnmusic_mode", "proxy")
+            observe_delivery(request, response, item, mode, started)
             if record:
-                mode = getattr(response, "fnmusic_mode", "proxy")
                 outcome = (
                     "play.redirect"
                     if mode == "direct"
@@ -438,7 +492,7 @@ def create_app(
                 )
             return response
         except Exception as exc:
-            if record:
+            if request.method == "GET":
                 playback_note(
                     "play.failed",
                     request,
@@ -483,11 +537,14 @@ def create_app(
 
     @app.api_route(PREFIX + "track/hls/{guid}/{filename}", methods=["GET", "HEAD"])
     async def hls(request: Request, guid: str, filename: str):
+        started = time.monotonic()
         item = track(guid)
         if not item:
             record = request.method == "GET" and filename.endswith(".m3u8")
             try:
                 response = await forward(request)
+                if not filename.endswith(".m3u8"):
+                    observe_delivery(request, response, native_track(guid, request), "official_hls", started)
                 if record and response.status_code < 400:
                     playback_note(
                         "play.playlist_forwarded",
@@ -498,7 +555,7 @@ def create_app(
                     )
                 return response
             except Exception as exc:
-                if record:
+                if request.method == "GET":
                     playback_note(
                         "play.failed",
                         request,
@@ -525,7 +582,10 @@ def create_app(
             if record:
                 playback_note("play.requested", request, item, user, mode="hls")
             try:
-                response = await app.state.transcode.audio(item, user, request.headers)
+                response = await app.state.transcode.audio(
+                    item, user, request.headers, request_id=delivery_context(request)["request_id"]
+                )
+                observe_delivery(request, response, item, "hls", started)
                 if record:
                     playback_note(
                         "play.hls_started",
@@ -538,7 +598,7 @@ def create_app(
                     )
                 return response
             except Exception as exc:
-                if record:
+                if request.method == "GET":
                     playback_note(
                         "play.failed",
                         request,

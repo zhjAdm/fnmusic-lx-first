@@ -7,6 +7,8 @@ from starlette.responses import StreamingResponse
 
 from fnmusic.transcode import Transcode
 from fnmusic.streams import ClosingStream
+from fnmusic.config import Config
+from fnmusic.logs import read_events
 
 
 @pytest.mark.asyncio
@@ -59,10 +61,12 @@ async def test_cancelled_close_still_releases_process_and_slot(monkeypatch):
 
         stdin = Input()
         stdout = Output()
+        stderr = asyncio.StreamReader()
 
         def kill(self):
             self.killed = True
             self.returncode = 0
+            self.stderr.feed_eof()
 
         async def wait(self):
             return 0
@@ -102,3 +106,24 @@ async def test_cancelled_close_still_releases_process_and_slot(monkeypatch):
     assert process.killed and closed
     assert transcode.slots._value == 2
     assert not transcode.cleanups
+
+
+@pytest.mark.asyncio
+async def test_ffmpeg_failure_records_exit_code_without_raw_stderr(tmp_path):
+    async def body():
+        yield b"https://example.invalid/private-audio?token=private-value"
+
+    class Media:
+        async def play(self, *args, **kwargs):
+            return StreamingResponse(body())
+
+    transcode = Transcode(Media(), Config(data_dir=tmp_path))
+    with pytest.raises(ValueError, match="AAC conversion failed"):
+        await transcode.audio({"guid": "a" * 32}, "user", {}, request_id="request-a")
+
+    [failure] = read_events(tmp_path)
+    assert failure["event"] == "play.ffmpeg_failed"
+    assert failure["exit_code"] != 0
+    assert failure["request_id"] == "request-a"
+    assert failure["code"] == "invalid_input"
+    assert "private" not in str(failure)

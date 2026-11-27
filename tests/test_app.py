@@ -638,8 +638,8 @@ def test_identity_timeout_logs_interface_without_unauthenticated_search_term(tmp
 
 
 def test_hls_range_retry_is_not_a_second_play_record(tmp_path):
-    from starlette.responses import Response
     from fnmusic.logs import read_events
+    from fnmusic.streams import ClosingStream
 
     oc = httpx.AsyncClient(
         base_url="http://official",
@@ -657,8 +657,14 @@ def test_hls_range_retry_is_not_a_second_play_record(tmp_path):
     with TestClient(app) as c:
         guid = app.state.store.save_track(RAW)["guid"]
 
-        async def audio(*args):
-            return Response(b"aac", media_type="audio/aac")
+        async def audio(*args, **kwargs):
+            async def body():
+                yield b"aac"
+
+            async def close():
+                pass
+
+            return ClosingStream(body(), media_type="audio/aac", close=close)
 
         app.state.transcode.audio = audio
         url = "/music/api/v1/track/hls/" + guid + "/audio.aac"
@@ -667,5 +673,63 @@ def test_hls_range_retry_is_not_a_second_play_record(tmp_path):
             c.get(url, headers={"cookie": "valid", "range": "bytes=1-"}).status_code
             == 200
         )
-    rows = [r for r in read_events(tmp_path) if r["component"] == "history"]
+    events = read_events(tmp_path)
+    rows = [r for r in events if r["component"] == "history"]
     assert [r["event"] for r in rows] == ["play.requested", "play.hls_started"]
+    deliveries = [r for r in events if r["event"] == "play.delivery"]
+    assert [(r["range"], r["state"], r["bytes_sent"]) for r in deliveries] == [
+        ("", "completed", 3), ("bytes=1-", "completed", 3),
+    ]
+    assert deliveries[0]["request_id"] == rows[1]["request_id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("spec", "ending"),
+    [
+        ("2.4", "completed"),
+        ("2.4", "source_error"),
+        ("2.4", "client_disconnected"),
+        ("2.3", "client_disconnected"),
+    ],
+)
+async def test_stream_records_delivery_outcome(spec, ending):
+    import anyio
+    from starlette.requests import ClientDisconnect
+    from fnmusic.streams import ClosingStream
+
+    first_chunk = anyio.Event()
+
+    async def body():
+        yield b"abc"
+        if spec == "2.3":
+            await anyio.sleep_forever()
+        if ending == "source_error":
+            raise OSError("private URL")
+
+    async def close():
+        pass
+
+    async def receive():
+        assert spec == "2.3"
+        await first_chunk.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        if message.get("body"):
+            first_chunk.set()
+        if ending == "client_disconnected" and not message.get("more_body", True):
+            raise BrokenPipeError()
+
+    recorded = []
+    response = ClosingStream(body(), close=close)
+    response.delivery_report = lambda **fields: recorded.append(fields)
+    scope = {"type": "http", "asgi": {"spec_version": spec}}
+    if ending == "completed" or spec == "2.3":
+        await response(scope, receive, send)
+    else:
+        with pytest.raises((ClientDisconnect, OSError)):
+            await response(scope, receive, send)
+    assert len(recorded) == 1
+    assert recorded[0]["state"] == ending
+    assert recorded[0]["bytes_sent"] == 3
