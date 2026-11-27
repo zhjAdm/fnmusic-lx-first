@@ -4,11 +4,11 @@
 
 无需添加音源密钥或个人访问令牌到 Actions Secrets。
 
-## 版本变动自动构建
+## 版本变动自动构建与发布
 
-更新 `fnmusic/__init__.py` 中的 `__version__` 并推送到 `main`，或合并包含版本变动的 PR。工作流比较本次推送前后的版本值，确认变动后执行测试、双架构打包和校验，并将 FPK 和 SHA256 上传到该次 Actions 运行的 **Artifacts**。
+更新 `fnmusic/__init__.py` 中的 `__version__` 并推送到 `main`，或合并包含版本变动的 PR。工作流比较本次推送前后的版本值，确认变动后执行测试、双架构打包和校验。成功后将 FPK 和 SHA256 上传到该次 Actions 运行的 **Artifacts**，再发布到对应版本的 GitHub **Releases**。
 
-只修改版本文件的注释会跳过打包。发布到 Releases 可通过手动构建，或使用下文的 **Publish existing FPK** 发布已构建的产物。
+只修改版本文件的注释会跳过打包和发布。已发布版本会被拒绝覆盖。手动构建仍可选择是否发布，也可使用 **Publish existing FPK** 发布已有产物。
 
 ## 手动构建
 
